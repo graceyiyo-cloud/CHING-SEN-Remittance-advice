@@ -27,9 +27,11 @@
   <script type="text/babel" data-type="module">
     import React, { useState, useEffect, useMemo } from 'react';
     import { createRoot } from 'react-dom/client';
-    import { CheckCircle, XCircle, Send, Edit3, Lock, LogIn, LogOut, Building, Database, Trash2, AlertCircle } from 'lucide-react';
+    // 新增 ExternalLink 圖示
+    import { CheckCircle, XCircle, Send, Edit3, Lock, LogIn, LogOut, Building, Database, Trash2, AlertCircle, ExternalLink } from 'lucide-react';
     import { initializeApp } from 'firebase/app';
-    import { getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
+    // 新增 setPersistence 與 inMemoryPersistence 模組
+    import { getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken, setPersistence, inMemoryPersistence } from 'firebase/auth';
     import { getFirestore, doc, setDoc, onSnapshot, collection, updateDoc, arrayUnion } from 'firebase/firestore';
 
     // ==========================================
@@ -90,10 +92,18 @@
             if (typeof window !== 'undefined' && window.__initial_auth_token) {
               await signInWithCustomToken(auth, window.__initial_auth_token);
             } else {
-              await signInAnonymously(auth);
+              try {
+                // 正常嘗試登入
+                await signInAnonymously(auth);
+              } catch (innerError) {
+                // 核心修復：如果被 LINE 擋住 localStorage 權限，自動切換為純記憶體模式
+                console.warn("標準連線受阻，嘗試自動切換為記憶體模式:", innerError);
+                await setPersistence(auth, inMemoryPersistence);
+                await signInAnonymously(auth);
+              }
             }
           } catch (error) {
-            console.error("登入初始化失敗:", error);
+            console.error("登入初始化仍失敗:", error);
             setAuthError(true);
           }
         };
@@ -257,15 +267,25 @@
 
       if (authError) {
         return (
-          <div className="min-h-screen flex items-center justify-center bg-[#F9F8F6] p-6">
-            <div className="bg-white p-8 rounded-2xl shadow-sm border border-[#EAEAEA] text-center max-w-md">
-              <AlertCircle className="w-12 h-12 text-red-400 mx-auto mb-4" />
-              <h2 className="text-xl font-bold text-gray-800 mb-2">瀏覽器環境受限</h2>
-              <p className="text-sm text-gray-600 mb-4 text-left">您目前可能使用的是 LINE 內建瀏覽器或無痕模式，導致系統無法正常連線資料庫。</p>
-              <div className="bg-gray-50 p-4 rounded-lg text-left border border-gray-200">
-                <p className="text-sm font-bold text-[#8BA39E]">💡 解決方式：</p>
-                <p className="text-sm text-gray-600 mt-1">請點擊畫面上方或右上角的圖示，並選擇<strong className="text-gray-800">「使用預設瀏覽器開啟」</strong>(Safari 或 Chrome) 即可正常使用。</p>
-              </div>
+          <div className="min-h-screen flex items-center justify-center bg-[#F9F8F6] p-4 sm:p-6">
+            <div className="bg-white p-8 rounded-2xl shadow-sm border border-[#EAEAEA] text-center max-w-md w-full">
+              <AlertCircle className="w-16 h-16 text-red-400 mx-auto mb-4" />
+              <h2 className="text-2xl font-bold text-gray-800 mb-3">請切換瀏覽器開啟</h2>
+              <p className="text-base text-gray-600 mb-6 text-left leading-relaxed">
+                因為 LINE 等軟體的內建瀏覽器限制，系統無法安全連線。<br/><br/>
+                請點擊下方按鈕，系統將自動為您使用手機的<strong>「預設瀏覽器 (Chrome / Safari)」</strong>重新開啟本網頁。
+              </p>
+              <button
+                onClick={() => {
+                  const currentUrl = window.location.href;
+                  const sep = currentUrl.includes('?') ? '&' : '?';
+                  window.location.href = currentUrl + sep + 'openExternalBrowser=1';
+                }}
+                className="w-full flex justify-center items-center py-4 px-4 bg-[#8BA39E] hover:bg-[#7A918C] text-white rounded-xl font-bold text-lg transition-colors shadow-md"
+              >
+                <ExternalLink className="w-6 h-6 mr-2" />
+                點我使用瀏覽器開啟
+              </button>
             </div>
           </div>
         );
@@ -320,7 +340,7 @@
         };
 
         try {
-          // 修改為：寫入到待對帳暫存區 (pending_remittances)，先不讓青森苑系統讀到
+          // 寫入到待對帳暫存區 (pending_remittances)
           const docRef = doc(getFirestore(), 'artifacts', appId, 'public', 'data', 'custom', 'pending_remittances');
           await setDoc(docRef, { remittances: arrayUnion(newRemittance) }, { merge: true });
           
