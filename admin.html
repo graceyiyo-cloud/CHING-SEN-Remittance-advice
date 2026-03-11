@@ -29,27 +29,25 @@
     import { createRoot } from 'react-dom/client';
     import { CheckCircle, XCircle, Edit3, Lock, LogIn, LogOut, Trash2, AlertCircle } from 'lucide-react';
     import { initializeApp, getApps } from 'firebase/app';
-    import { getAuth, initializeAuth, inMemoryPersistence, onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
+    import { getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken, setPersistence, inMemoryPersistence } from 'firebase/auth';
     import { getFirestore, doc, setDoc, onSnapshot, collection, updateDoc, arrayUnion } from 'firebase/firestore';
 
-    const firebaseConfig = typeof window !== 'undefined' && window.__firebase_config 
-      ? JSON.parse(window.__firebase_config) 
-      : {
-          apiKey: "AIzaSyDREvduzrja4xjF-RCpKa-qv45JZCw9tjI",
-          authDomain: "gen-lang-client-0168131217.firebaseapp.com",
-          projectId: "gen-lang-client-0168131217",
-          storageBucket: "gen-lang-client-0168131217.firebasestorage.app",
-          messagingSenderId: "620488371764",
-          appId: "1:620488371764:web:d5eb9d1dff62d66bab2461"
-        };
+    // ==========================================
+    // 已對齊您青森苑系統的專案配置
+    // ==========================================
+    const firebaseConfig = {
+      apiKey: "AIzaSyDREvduzrja4xjF-RCpKa-qv45JZCw9tjI",
+      authDomain: "gen-lang-client-0168131217.firebaseapp.com",
+      projectId: "gen-lang-client-0168131217",
+      storageBucket: "gen-lang-client-0168131217.firebasestorage.app",
+      messagingSenderId: "620488371764",
+      appId: "1:620488371764:web:d5eb9d1dff62d66bab2461"
+    };
 
     const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
-    let auth;
-    try { auth = initializeAuth(app, { persistence: inMemoryPersistence }); } 
-    catch (e) { auth = getAuth(app); }
-    
+    const auth = getAuth(app);
     const db = getFirestore(app);
-    const getAppId = () => typeof window !== 'undefined' && window.__app_id ? window.__app_id : 'qingsenyuan-admin';
+    const defaultAppId = 'qingsenyuan-admin'; 
 
     const PAYMENT_STAGES = [
       { k: '訂金', l: '訂金' }, { k: '簽約', l: '簽約金' }, { k: '2F', l: '2F工程' },
@@ -66,7 +64,6 @@
       const [user, setUser] = useState(null);
       const [authReady, setAuthReady] = useState(false);
       const [isReady, setIsReady] = useState(false);
-      const [authError, setAuthError] = useState('');
       const [dbError, setDbError] = useState('');
 
       const [masterUnits, setMasterUnits] = useState({}); 
@@ -77,102 +74,71 @@
       useEffect(() => {
         const initAuth = async () => {
           try {
+            // 強制設定為記憶體持久性，增加手機與測試環境相容性
+            await setPersistence(auth, inMemoryPersistence);
+
             if (typeof window !== 'undefined' && window.__initial_auth_token) {
-              await signInWithCustomToken(auth, window.__initial_auth_token);
+              try {
+                // 嘗試使用環境提供的權杖
+                await signInWithCustomToken(auth, window.__initial_auth_token);
+              } catch (tokenError) {
+                // 如果權杖與當前專案不匹配（常見於 Canvas 使用自訂 Config），則降級使用匿名登入
+                console.warn("驗證權杖不匹配，自動切換至匿名連線");
+                await signInAnonymously(auth);
+              }
             } else {
               await signInAnonymously(auth);
             }
           } catch (error) {
             console.error("登入初始化失敗:", error);
-            setAuthError(error.message);
+            setDbError("連線初始化失敗: " + error.message);
           } finally {
             setAuthReady(true);
           }
         };
         
         initAuth();
-
         const unsubscribeAuth = onAuthStateChanged(auth, (u) => {
-          setUser(u);
+          if (u) setUser(u);
         });
         return () => unsubscribeAuth();
       }, []);
 
       useEffect(() => {
-        if (authError) {
-          setIsReady(true);
-          return;
-        }
         if (!user || !authReady) return;
-
-        const appId = getAppId();
-        let errorCount = 0;
+        
+        const appId = defaultAppId;
         const handleError = (error) => {
           console.error("資料讀取失敗:", error);
-          if (errorCount === 0) {
-            setDbError(error.message);
-            setIsReady(true);
-            errorCount++;
-          }
+          setDbError(error.message);
+          setIsReady(true);
         };
         
-        const unsubCustom = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'custom', 'additions'), (snap) => {
-          if (snap.exists()) setReconciledRems(snap.data().remittances || []);
-        }, handleError);
-
-        const unsubPending = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'custom', 'pending_remittances'), (snap) => {
-          if (snap.exists()) setPendingRems(snap.data().remittances || []);
-        }, handleError);
-
-        const unsubInv = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'invoices', 'all_invoices'), (snap) => {
-          if (snap.exists()) setInvoices(snap.data());
-        }, handleError);
-
+        // 監聽各項資料
+        const unsubAdditions = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'custom', 'additions'), (s) => setReconciledRems(s.data()?.remittances || []), handleError);
+        const unsubPending = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'custom', 'pending_remittances'), (s) => setPendingRems(s.data()?.remittances || []), handleError);
+        const unsubInv = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'invoices', 'all_invoices'), (s) => setInvoices(s.data() || {}), handleError);
+        
         const unsubMaster = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'master_sheets'), (snap) => {
           const units = {};
           snap.forEach(docSnap => {
-            const rows = docSnap.data().rows || [];
-            rows.forEach(row => {
+            docSnap.data().rows?.forEach(row => {
               let f = String(row['樓層'] || '').trim().replace(/\.0$/, '');
               let u = String(row['編號'] || '').trim().replace(/\.0$/, '');
-              const combined = String(row['戶別'] || row['戶名'] || '').trim().replace(/\.0$/, '');
-              if (combined && (!f || !u)) {
-                const match = combined.match(/^(\d+)([A-Z]\d*)$/i);
-                if (match) { f = match[1]; u = match[2]; } else { u = combined; }
-              }
-
-              if (f && u && !f.includes('合計') && !f.includes('總計')) {
-                const unitKey = `${f}_${u}`;
-                if (!units[unitKey]) units[unitKey] = { floor: f, unit: u, buyer: '未填寫', stages: {} };
-
-                const buyer = row['買方'] || row['姓名'] || row['客戶名稱'] || '';
-                if (buyer.trim() !== '' && units[unitKey].buyer === '未填寫') units[unitKey].buyer = buyer.trim();
-
-                PAYMENT_STAGES.forEach(stage => {
-                  const stKey = stage.k;
-                  let contractAmt = 0, paidAmt = 0, unpaidAmt = NaN;
-
-                  Object.keys(row).forEach(key => {
-                    const val = parseFloat(String(row[key] || '').replace(/,/g, '')) || 0;
-                    if (key.includes(stKey)) {
-                       if (key.includes('應收') || key.includes('應付')) contractAmt += val;
-                       if (key.includes('已付') || key.includes('實收')) paidAmt += val;
-                       if (key.includes('未付') || key.includes('餘額')) unpaidAmt = parseFloat(String(row[key] || '').replace(/,/g, ''));
+              if (f && u && !f.includes('合計')) {
+                const key = `${f}_${u}`;
+                if (!units[key]) units[key] = { floor: f, unit: u, buyer: row['買方'] || row['姓名'] || '-', stages: {} };
+                PAYMENT_STAGES.forEach(st => {
+                  let contract = 0, paid = 0, unpaid = NaN;
+                  Object.keys(row).forEach(rk => {
+                    const val = parseFloat(String(row[rk]).replace(/,/g, '')) || 0;
+                    if (rk.includes(st.k)) {
+                      if (rk.includes('應收') || rk.includes('應付')) contract += val;
+                      if (rk.includes('已付') || rk.includes('實收')) paid += val;
+                      if (rk.includes('未付') || rk.includes('餘額')) unpaid = parseFloat(String(row[rk]).replace(/,/g, ''));
                     }
                   });
-
-                  let finalUnpaid = 0;
-                  if (!isNaN(unpaidAmt) && unpaidAmt !== 0) finalUnpaid = unpaidAmt;
-                  else if (contractAmt > 0) finalUnpaid = contractAmt - paidAmt;
-
-                  if (row[`${stKey}-未付`] !== undefined && String(row[`${stKey}-未付`]).trim() !== '') {
-                      finalUnpaid = parseFloat(String(row[`${stKey}-未付`]).replace(/,/g, '')) || 0;
-                  } else if (row[`${stKey}-應收`] !== undefined && String(row[`${stKey}-應收`]).trim() !== '') {
-                      const specificContract = parseFloat(String(row[`${stKey}-應收`]).replace(/,/g, '')) || 0;
-                      const specificPaid = parseFloat(String(row[`${stKey}-已付`] || '0').replace(/,/g, '')) || 0;
-                      finalUnpaid = specificContract - specificPaid;
-                  }
-                  units[unitKey].stages[stKey] = (units[unitKey].stages[stKey] || 0) + finalUnpaid;
+                  units[key].stages[st.k] = (units[key].stages[st.k] || 0) + (!isNaN(unpaid) ? unpaid : (contract - paid));
                 });
               }
             });
@@ -181,31 +147,28 @@
           setIsReady(true);
         }, handleError);
 
-        return () => { unsubCustom(); unsubPending(); unsubInv(); unsubMaster(); };
-      }, [user, authReady, authError]);
+        return () => { unsubAdditions(); unsubPending(); unsubInv(); unsubMaster(); };
+      }, [user, authReady]);
 
       const handleLogin = (e) => {
         e.preventDefault();
-        if (passwordInput === 'admin123') {
-          setIsAdminAuth(true); setLoginError(''); setPasswordInput('');
-        } else {
-          setLoginError('密碼錯誤');
-        }
+        if (passwordInput === 'admin123') { setIsAdminAuth(true); setLoginError(''); setPasswordInput(''); } 
+        else { setLoginError('密碼錯誤'); }
       };
 
-      if (authError || dbError) {
+      if (dbError && dbError.includes('permission-denied')) {
         return (
-          <div className="min-h-screen flex items-center justify-center bg-[#F9F8F6] p-4">
-            <div className="bg-white p-8 rounded-2xl shadow-sm border border-red-200 text-center max-w-md w-full">
+          <div className="min-h-screen flex items-center justify-center p-4 bg-[#F9F8F6] text-center font-sans">
+            <div className="bg-white p-8 rounded-2xl shadow-sm border border-red-200 w-full max-w-md">
               <AlertCircle className="w-16 h-16 text-red-400 mx-auto mb-4" />
-              <h2 className="text-xl font-bold text-gray-800 mb-3">⚠️ 系統連線異常</h2>
-              <p className="text-sm text-gray-600 mb-4 text-left leading-relaxed">
-                系統無法存取資料庫，錯誤訊息：<br/>
-                <span className="text-red-500 font-mono text-xs">{authError || dbError}</span>
-              </p>
-              <div className="bg-gray-50 p-4 rounded-lg text-left border border-gray-200 text-sm text-gray-700">
-                <p className="font-bold text-red-600 mb-2">💡 開發者提示：</p>
-                <p>若您將此網頁發佈至 <strong>GitHub Pages</strong>，Firebase 測試資料庫會基於安全考量阻擋存取。您需要建立自己的免費 Firebase 專案，並替換程式碼頂端的 <code>firebaseConfig</code> 才能對外發佈使用。</p>
+              <h2 className="text-xl font-bold mb-3">存取權限不足</h2>
+              <p className="text-sm text-gray-600 mb-4">系統無法讀取資料庫。請確認已在 Firebase 控制台設定：</p>
+              <div className="bg-gray-50 p-4 rounded-lg text-left text-xs border border-gray-200 text-gray-700">
+                <ol className="list-decimal list-inside space-y-2">
+                  <li>Authentication 開啟「匿名登入」</li>
+                  <li>Firestore Rules 設定為允許匿名讀寫</li>
+                  <li>GitHub 網域已加入「授權網域」白名單</li>
+                </ol>
               </div>
             </div>
           </div>
@@ -221,11 +184,8 @@
                 <h2 className="text-xl font-bold text-gray-800">對帳系統後台登入</h2>
               </div>
               <form onSubmit={handleLogin} className="space-y-6">
-                <div>
-                  <input type="password" required placeholder="請輸入密碼" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} className="w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-gray-800 text-center tracking-widest outline-none" />
-                  {loginError && <p className="text-red-500 text-sm mt-2 text-center">{loginError}</p>}
-                </div>
-                <button type="submit" className="w-full flex justify-center items-center bg-gray-800 hover:bg-gray-900 text-white py-3 rounded-lg font-medium"><LogIn className="w-5 h-5 mr-2" />登入</button>
+                <div><input type="password" required placeholder="請輸入管理密碼" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} className="w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-gray-800 text-center tracking-widest outline-none" />{loginError && <p className="text-red-500 text-sm mt-2 text-center">{loginError}</p>}</div>
+                <button type="submit" className="w-full flex justify-center items-center bg-gray-800 hover:bg-gray-900 text-white py-3 rounded-lg font-medium shadow-sm transition-colors"><LogIn className="w-5 h-5 mr-2" />登入系統</button>
               </form>
             </div>
           </div>
@@ -233,12 +193,7 @@
       }
 
       if (!isReady) {
-        return (
-          <div className="min-h-screen flex flex-col items-center justify-center bg-[#F9F8F6] p-6 font-sans">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#8BA39E] mb-6"></div>
-            <p className="text-[#8BA39E] font-medium">載入資料庫中...</p>
-          </div>
-        );
+        return <div className="min-h-screen flex flex-col items-center justify-center bg-[#F9F8F6] font-sans"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#8BA39E] mb-6"></div><p className="text-[#8BA39E] font-medium text-sm">載入資料庫中...</p></div>;
       }
 
       return <AdminDashboard pendingRems={pendingRems} reconciledRems={reconciledRems} invoices={invoices} masterUnits={masterUnits} handleLogout={() => setIsAdminAuth(false)} />;
@@ -246,174 +201,101 @@
 
     function AdminDashboard({ pendingRems, reconciledRems, invoices, masterUnits, handleLogout }) {
       const [selectedStage, setSelectedStage] = useState('使照');
-
       const combinedRemittances = useMemo(() => {
-        const p = pendingRems.map(r => ({ ...r, _isReconciled: false }));
-        const r = reconciledRems.map(r => ({ ...r, _isReconciled: true }));
-        return [...p, ...r].sort((a, b) => (b.id || 0) - (a.id || 0));
+        const p = pendingRems.map(r => ({ ...r, _isRec: false }));
+        const r = reconciledRems.map(r => ({ ...r, _isRec: true }));
+        return [...p, ...r].sort((a, b) => (parseInt(b.id) || 0) - (parseInt(a.id) || 0));
       }, [pendingRems, reconciledRems]);
 
       const updateInvoiceData = async (remittanceId, field, value) => {
-        const appId = getAppId();
         const docRef = doc(getFirestore(), 'artifacts', appId, 'public', 'data', 'invoices', 'all_invoices');
-        const updatePayload = { [`${remittanceId}.${field}`]: value };
-        try {
-          await updateDoc(docRef, updatePayload);
-        } catch (e) {
-          await setDoc(docRef, { [remittanceId]: { [field]: value } }, { merge: true });
-        }
+        try { await updateDoc(docRef, { [`${remittanceId}.${field}`]: value }); } 
+        catch (e) { await setDoc(docRef, { [remittanceId]: { [field]: value } }, { merge: true }); }
       };
 
       const handleToggleReconcile = async (rem, checked) => {
-        const appId = getAppId();
-        const additionsRef = doc(getFirestore(), 'artifacts', appId, 'public', 'data', 'custom', 'additions');
-        const pendingRef = doc(getFirestore(), 'artifacts', appId, 'public', 'data', 'custom', 'pending_remittances');
-
-        const cleanRem = { ...rem };
-        delete cleanRem._isReconciled;
-
+        const addRef = doc(getFirestore(), 'artifacts', appId, 'public', 'data', 'custom', 'additions');
+        const penRef = doc(getFirestore(), 'artifacts', appId, 'public', 'data', 'custom', 'pending_remittances');
+        const cleanRem = { ...rem }; delete cleanRem._isRec;
+        updateInvoiceData(rem.id, '已對帳', checked);
         try {
-          updateInvoiceData(rem.id, '已對帳', checked);
           if (checked) {
-            const newPending = pendingRems.filter(r => r.id !== rem.id);
-            await setDoc(pendingRef, { remittances: newPending }, { merge: true });
-            await setDoc(additionsRef, { remittances: arrayUnion(cleanRem) }, { merge: true });
+            await setDoc(penRef, { remittances: pendingRems.filter(r => r.id !== rem.id) }, { merge: true });
+            await setDoc(addRef, { remittances: arrayUnion(cleanRem) }, { merge: true });
           } else {
-            const newReconciled = reconciledRems.filter(r => r.id !== rem.id);
-            await setDoc(additionsRef, { remittances: newReconciled }, { merge: true });
-            await setDoc(pendingRef, { remittances: arrayUnion(cleanRem) }, { merge: true });
+            await setDoc(addRef, { remittances: reconciledRems.filter(r => r.id !== rem.id) }, { merge: true });
+            await setDoc(penRef, { remittances: arrayUnion(cleanRem) }, { merge: true });
           }
-        } catch (error) {
-          console.error("狀態切換失敗:", error);
-          alert("狀態切換失敗，請稍後再試。");
-        }
+        } catch (e) { alert("狀態切換失敗，請檢查資料庫權限規則。"); }
       };
 
       const handleDeleteRemittance = async (rem) => {
         if (!window.confirm("確定要刪除這筆回報紀錄嗎？")) return;
-        const appId = getAppId();
         try {
-          if (rem._isReconciled) {
-            const docRef = doc(getFirestore(), 'artifacts', appId, 'public', 'data', 'custom', 'additions');
-            const updated = reconciledRems.filter(r => r.id !== rem.id);
-            await setDoc(docRef, { remittances: updated }, { merge: true });
-          } else {
-            const docRef = doc(getFirestore(), 'artifacts', appId, 'public', 'data', 'custom', 'pending_remittances');
-            const updated = pendingRems.filter(r => r.id !== rem.id);
-            await setDoc(docRef, { remittances: updated }, { merge: true });
-          }
-        } catch (error) {
-          console.error("刪除失敗:", error);
-          alert("刪除失敗，請稍後再試。");
-        }
+          const path = rem._isRec ? 'additions' : 'pending_remittances';
+          const list = rem._isRec ? reconciledRems : pendingRems;
+          const ref = doc(getFirestore(), 'artifacts', appId, 'public', 'data', 'custom', path);
+          await setDoc(ref, { remittances: list.filter(r => r.id !== rem.id) }, { merge: true });
+        } catch (e) { alert("刪除失敗"); }
       };
 
       const stageLabel = PAYMENT_STAGES.find(s => s.k === selectedStage)?.l || selectedStage;
 
       return (
-        <div className="py-6 px-4 sm:px-6 lg:px-8 font-sans">
-          <div className="max-w-7xl mx-auto mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center bg-white p-4 rounded-xl shadow-sm border border-[#EAEAEA] gap-4">
-            <div className="flex items-center">
-              <Lock className="w-5 h-5 text-[#8BA39E] mr-2" />
-              <h1 className="text-lg font-bold text-gray-800">內部對帳管理中心</h1>
-            </div>
-            
-            <div className="flex items-center gap-4 w-full sm:w-auto justify-between sm:justify-end">
-              <div className="flex items-center bg-gray-50 px-3 py-1.5 rounded-lg border border-gray-200">
-                <span className="text-sm font-bold text-gray-600 mr-2">對帳期款目標：</span>
-                <select 
-                  value={selectedStage}
-                  onChange={(e) => setSelectedStage(e.target.value)}
-                  className="bg-white border border-gray-300 rounded text-sm px-2 py-1 outline-none focus:ring-1 focus:ring-[#8BA39E] text-gray-700 font-medium"
-                >
-                  {PAYMENT_STAGES.map(s => (
-                    <option key={s.k} value={s.k}>{s.l}</option>
-                  ))}
+        <div className="py-6 px-4 sm:px-6 lg:px-8 font-sans max-w-7xl mx-auto">
+          <div className="bg-white p-4 rounded-xl shadow-sm border border-[#EAEAEA] flex flex-col sm:flex-row justify-between items-center mb-6 gap-4">
+            <div className="flex items-center"><Lock className="w-5 h-5 text-[#8BA39E] mr-2" /><h1 className="text-lg font-bold text-gray-800">內部對帳管理中心</h1></div>
+            <div className="flex items-center gap-4">
+              <div className="bg-gray-50 px-3 py-1.5 rounded-lg border border-gray-200">
+                <span className="text-sm font-bold text-gray-600 mr-2">對帳期款：</span>
+                <select value={selectedStage} onChange={(e) => setSelectedStage(e.target.value)} className="bg-transparent text-sm outline-none font-medium">
+                  {PAYMENT_STAGES.map(s => <option key={s.k} value={s.k}>{s.l}</option>)}
                 </select>
               </div>
-              <button onClick={handleLogout} className="flex items-center text-sm text-gray-500 hover:text-gray-800 whitespace-nowrap"><LogOut className="w-4 h-4 mr-1" /> 登出</button>
+              <button onClick={handleLogout} className="flex items-center text-sm text-gray-500 hover:text-red-600 transition-colors"><LogOut className="w-4 h-4 mr-1" /> 登出</button>
             </div>
           </div>
 
-          <div className="max-w-7xl mx-auto bg-white rounded-xl shadow-sm border border-[#EAEAEA] overflow-hidden">
-            <div className="overflow-x-auto w-full">
+          <div className="bg-white rounded-xl shadow-sm border overflow-hidden border-[#EAEAEA]">
+            <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse whitespace-nowrap">
                 <thead>
                   <tr className="bg-[#F0EFEA] text-[#4A4A4A] text-sm">
-                    <th className="p-4 font-medium">狀態</th>
-                    <th className="p-4 font-medium">戶別 / 買方</th>
-                    <th className="p-4 font-medium">匯款日期 / 帳號資訊</th>
-                    <th className="p-4 font-medium">金額比對 ({stageLabel})</th>
-                    <th className="p-4 font-medium">發票日期 (自動同步)</th>
-                    <th className="p-4 font-medium">發票號碼 (自動同步)</th>
-                    <th className="p-4 font-medium text-center">操作</th>
+                    <th className="p-4 font-medium">狀態</th><th className="p-4 font-medium">戶別 / 買方</th><th className="p-4 font-medium">匯款資訊</th><th className="p-4 font-medium">金額比對</th><th className="p-4 font-medium">發票日期</th><th className="p-4 font-medium">發票號碼</th><th className="p-4 text-center">操作</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 text-sm">
                   {combinedRemittances.map((sub) => {
                     const master = masterUnits[sub.unitKey];
+                    const exp = master?.stages?.[selectedStage] || 0;
                     const invData = invoices[sub.id] || {};
-                    const expectedAmt = master?.stages?.[selectedStage] || 0;
-                    const isReconciled = sub._isReconciled; 
-
                     return (
-                      <tr key={sub.id} className="hover:bg-gray-50 transition-colors">
+                      <tr key={sub.id} className="hover:bg-gray-50 transition-colors font-medium text-gray-700">
+                        <td className="p-4"><label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" checked={sub._isRec} onChange={(e) => handleToggleReconcile(sub, e.target.checked)} className="w-5 h-5 text-[#8BA39E] rounded border-gray-300 cursor-pointer" /><span className={sub._isRec ? 'text-green-600 font-bold' : 'text-gray-400'}>{sub._isRec ? '已對帳' : '待處理'}</span></label></td>
+                        <td className="p-4"><div>{master ? `${master.floor}${master.unit}` : sub.unitKey}</div><div className="text-xs text-gray-400 font-normal">{master ? master.buyer : '未識別用戶'}</div></td>
+                        <td className="p-4"><div>{sub.匯款日期}</div><div className="text-xs text-gray-400 font-normal">帳號: {sub.帳號後五碼} / 戶名: {sub.匯款帳戶戶名}</div></td>
                         <td className="p-4">
-                          <label className="flex items-center cursor-pointer">
-                            <input type="checkbox" checked={isReconciled} onChange={(e) => handleToggleReconcile(sub, e.target.checked)} className="w-5 h-5 text-[#8BA39E] rounded cursor-pointer" />
-                            <span className={`ml-2 font-medium ${isReconciled ? 'text-green-600' : 'text-gray-400'}`}>{isReconciled ? '已對帳' : '待處理'}</span>
-                          </label>
-                        </td>
-                        <td className="p-4">
-                          <div className="font-semibold text-gray-800">{master ? `${master.floor}${master.unit}` : sub.unitKey}</div>
-                          <div className="text-xs text-gray-500">{master ? master.buyer : '未找到買方'}</div>
-                        </td>
-                        <td className="p-4">
-                          <div>{sub.匯款日期}</div>
-                          <div className="text-xs text-gray-500 font-mono">帳號: {sub.帳號後五碼 || '無資料'}</div>
-                          <div className="text-xs text-gray-500">戶名: {sub.匯款帳戶戶名 || '未填寫'}</div>
-                        </td>
-                        <td className="p-4">
-                          <div className="flex items-center">
-                            <span className="font-semibold text-[#8BA39E]">${(sub.匯款金額 || 0).toLocaleString()}</span>
-                            {sub.匯款金額 === expectedAmt && expectedAmt > 0 ? (
-                              <CheckCircle className="w-4 h-4 text-green-500 ml-2" title="金額相符" />
-                            ) : expectedAmt > 0 ? (
-                              <XCircle className="w-4 h-4 text-orange-400 ml-2" title="金額不符" />
-                            ) : null}
+                          <div className="flex items-center gap-1 text-[#8BA39E] font-bold">
+                            ${sub.匯款金額?.toLocaleString()}
+                            {sub.匯款金額 === exp ? <CheckCircle size={14} className="text-green-500" /> : <XCircle size={14} className="text-orange-400" />}
                           </div>
-                          <div className="text-xs text-gray-500">應收{stageLabel}: ${expectedAmt.toLocaleString()}</div>
+                          <div className="text-[10px] text-gray-400 font-normal">應收餘額: ${exp.toLocaleString()}</div>
                         </td>
-                        <td className="p-4">
-                          <input type="date" value={invData['發票日期'] ? invData['發票日期'].replace(/\//g, '-') : ''} onChange={(e) => updateInvoiceData(sub.id, '發票日期', e.target.value.replace(/-/g, '/'))} className="px-2 py-1 border rounded text-sm outline-none focus:ring-1 focus:ring-[#8BA39E]" />
-                        </td>
-                        <td className="p-4">
-                          <div className="flex items-center">
-                            <Edit3 className="w-4 h-4 text-gray-400 mr-1" />
-                            <input type="text" placeholder="例如: AB12345678" value={invData['發票號碼'] || ''} onChange={(e) => updateInvoiceData(sub.id, '發票號碼', e.target.value)} className="w-32 px-2 py-1 border rounded text-sm outline-none focus:ring-1 focus:ring-[#8BA39E] font-mono" />
-                          </div>
-                        </td>
-                        <td className="p-4 text-center">
-                          <button onClick={() => handleDeleteRemittance(sub)} className="text-red-400 hover:text-red-600 transition-colors p-1" title="刪除此紀錄">
-                            <Trash2 className="w-4 h-5 mx-auto" />
-                          </button>
-                        </td>
+                        <td className="p-4"><input type="date" value={(invData['發票日期'] || '').replace(/\//g, '-')} onChange={(e) => updateInvoiceData(sub.id, '發票日期', e.target.value.replace(/-/g, '/'))} className="px-2 py-1 border rounded text-xs outline-none focus:ring-1 focus:ring-[#8BA39E]" /></td>
+                        <td className="p-4"><div className="flex items-center gap-1"><Edit3 size={12} className="text-gray-400"/><input type="text" placeholder="發票號碼" value={invData['發票號碼'] || ''} onChange={(e) => updateInvoiceData(sub.id, '發票號碼', e.target.value)} className="w-28 px-2 py-1 border rounded text-xs font-mono outline-none focus:ring-1 focus:ring-[#8BA39E]" /></div></td>
+                        <td className="p-4 text-center"><button onClick={() => handleDeleteRemittance(sub)} className="text-red-300 hover:text-red-500 transition-colors p-1"><Trash2 className="w-4 h-5 mx-auto" /></button></td>
                       </tr>
                     );
                   })}
-                  {combinedRemittances.length === 0 && (
-                    <tr><td colSpan="7" className="p-8 text-center text-gray-400">目前尚無匯款回報紀錄</td></tr>
-                  )}
                 </tbody>
               </table>
+              {combinedRemittances.length === 0 && <div className="p-20 text-center text-gray-400 font-medium">目前尚無匯款回報紀錄</div>}
             </div>
           </div>
         </div>
       );
     }
-
-    const root = createRoot(document.getElementById('root')); 
-    root.render(<App />);
+    const root = createRoot(document.getElementById('root')); root.render(<App />);
   </script>
 </body>
 </html>
