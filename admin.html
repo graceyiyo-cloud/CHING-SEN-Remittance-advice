@@ -27,9 +27,9 @@
   <script type="text/babel" data-type="module">
     import React, { useState, useEffect, useMemo } from 'react';
     import { createRoot } from 'react-dom/client';
-    import { CheckCircle, XCircle, Edit3, Lock, LogIn, LogOut, Trash2 } from 'lucide-react';
+    import { CheckCircle, XCircle, Edit3, Lock, LogIn, LogOut, Trash2, AlertCircle } from 'lucide-react';
     import { initializeApp, getApps } from 'firebase/app';
-    import { getAuth, onAuthStateChanged, signInAnonymously } from 'firebase/auth';
+    import { getAuth, initializeAuth, inMemoryPersistence, onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
     import { getFirestore, doc, setDoc, onSnapshot, collection, updateDoc, arrayUnion } from 'firebase/firestore';
 
     const firebaseConfig = typeof window !== 'undefined' && window.__firebase_config 
@@ -44,9 +44,12 @@
         };
 
     const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
-    const auth = getAuth(app);
+    let auth;
+    try { auth = initializeAuth(app, { persistence: inMemoryPersistence }); } 
+    catch (e) { auth = getAuth(app); }
+    
     const db = getFirestore(app);
-    const defaultAppId = 'qingsenyuan-admin'; 
+    const getAppId = () => typeof window !== 'undefined' && window.__app_id ? window.__app_id : 'qingsenyuan-admin';
 
     const PAYMENT_STAGES = [
       { k: '訂金', l: '訂金' }, { k: '簽約', l: '簽約金' }, { k: '2F', l: '2F工程' },
@@ -61,7 +64,10 @@
       const [loginError, setLoginError] = useState('');
       
       const [user, setUser] = useState(null);
+      const [authReady, setAuthReady] = useState(false);
       const [isReady, setIsReady] = useState(false);
+      const [authError, setAuthError] = useState('');
+      const [dbError, setDbError] = useState('');
 
       const [masterUnits, setMasterUnits] = useState({}); 
       const [reconciledRems, setReconciledRems] = useState([]); 
@@ -69,28 +75,58 @@
       const [invoices, setInvoices] = useState({});       
 
       useEffect(() => {
-        signInAnonymously(auth).catch(err => console.warn(err));
+        const initAuth = async () => {
+          try {
+            if (typeof window !== 'undefined' && window.__initial_auth_token) {
+              await signInWithCustomToken(auth, window.__initial_auth_token);
+            } else {
+              await signInAnonymously(auth);
+            }
+          } catch (error) {
+            console.error("登入初始化失敗:", error);
+            setAuthError(error.message);
+          } finally {
+            setAuthReady(true);
+          }
+        };
+        
+        initAuth();
+
         const unsubscribeAuth = onAuthStateChanged(auth, (u) => {
-          if (u) setUser(u);
+          setUser(u);
         });
         return () => unsubscribeAuth();
       }, []);
 
       useEffect(() => {
-        if (!user) return;
-        const appId = defaultAppId;
+        if (authError) {
+          setIsReady(true);
+          return;
+        }
+        if (!user || !authReady) return;
+
+        const appId = getAppId();
+        let errorCount = 0;
+        const handleError = (error) => {
+          console.error("資料讀取失敗:", error);
+          if (errorCount === 0) {
+            setDbError(error.message);
+            setIsReady(true);
+            errorCount++;
+          }
+        };
         
         const unsubCustom = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'custom', 'additions'), (snap) => {
           if (snap.exists()) setReconciledRems(snap.data().remittances || []);
-        });
+        }, handleError);
 
         const unsubPending = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'custom', 'pending_remittances'), (snap) => {
           if (snap.exists()) setPendingRems(snap.data().remittances || []);
-        });
+        }, handleError);
 
         const unsubInv = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'invoices', 'all_invoices'), (snap) => {
           if (snap.exists()) setInvoices(snap.data());
-        });
+        }, handleError);
 
         const unsubMaster = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'master_sheets'), (snap) => {
           const units = {};
@@ -143,10 +179,10 @@
           });
           setMasterUnits(units);
           setIsReady(true);
-        });
+        }, handleError);
 
         return () => { unsubCustom(); unsubPending(); unsubInv(); unsubMaster(); };
-      }, [user]);
+      }, [user, authReady, authError]);
 
       const handleLogin = (e) => {
         e.preventDefault();
@@ -156,6 +192,25 @@
           setLoginError('密碼錯誤');
         }
       };
+
+      if (authError || dbError) {
+        return (
+          <div className="min-h-screen flex items-center justify-center bg-[#F9F8F6] p-4">
+            <div className="bg-white p-8 rounded-2xl shadow-sm border border-red-200 text-center max-w-md w-full">
+              <AlertCircle className="w-16 h-16 text-red-400 mx-auto mb-4" />
+              <h2 className="text-xl font-bold text-gray-800 mb-3">⚠️ 系統連線異常</h2>
+              <p className="text-sm text-gray-600 mb-4 text-left leading-relaxed">
+                系統無法存取資料庫，錯誤訊息：<br/>
+                <span className="text-red-500 font-mono text-xs">{authError || dbError}</span>
+              </p>
+              <div className="bg-gray-50 p-4 rounded-lg text-left border border-gray-200 text-sm text-gray-700">
+                <p className="font-bold text-red-600 mb-2">💡 開發者提示：</p>
+                <p>若您將此網頁發佈至 <strong>GitHub Pages</strong>，Firebase 測試資料庫會基於安全考量阻擋存取。您需要建立自己的免費 Firebase 專案，並替換程式碼頂端的 <code>firebaseConfig</code> 才能對外發佈使用。</p>
+              </div>
+            </div>
+          </div>
+        );
+      }
 
       if (!isAdminAuth) {
         return (
@@ -199,7 +254,7 @@
       }, [pendingRems, reconciledRems]);
 
       const updateInvoiceData = async (remittanceId, field, value) => {
-        const appId = defaultAppId;
+        const appId = getAppId();
         const docRef = doc(getFirestore(), 'artifacts', appId, 'public', 'data', 'invoices', 'all_invoices');
         const updatePayload = { [`${remittanceId}.${field}`]: value };
         try {
@@ -210,7 +265,7 @@
       };
 
       const handleToggleReconcile = async (rem, checked) => {
-        const appId = defaultAppId;
+        const appId = getAppId();
         const additionsRef = doc(getFirestore(), 'artifacts', appId, 'public', 'data', 'custom', 'additions');
         const pendingRef = doc(getFirestore(), 'artifacts', appId, 'public', 'data', 'custom', 'pending_remittances');
 
@@ -236,7 +291,7 @@
 
       const handleDeleteRemittance = async (rem) => {
         if (!window.confirm("確定要刪除這筆回報紀錄嗎？")) return;
-        const appId = defaultAppId;
+        const appId = getAppId();
         try {
           if (rem._isReconciled) {
             const docRef = doc(getFirestore(), 'artifacts', appId, 'public', 'data', 'custom', 'additions');
