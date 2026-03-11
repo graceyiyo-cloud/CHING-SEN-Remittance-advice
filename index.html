@@ -27,10 +27,8 @@
   <script type="text/babel" data-type="module">
     import React, { useState, useEffect, useMemo } from 'react';
     import { createRoot } from 'react-dom/client';
-    // 新增 ExternalLink 圖示
-    import { CheckCircle, XCircle, Send, Edit3, Lock, LogIn, LogOut, Building, Database, Trash2, AlertCircle, ExternalLink } from 'lucide-react';
+    import { CheckCircle, XCircle, Send, Edit3, Lock, LogIn, LogOut, Building, Database, Trash2, AlertCircle, ExternalLink, RefreshCw } from 'lucide-react';
     import { initializeApp } from 'firebase/app';
-    // 新增 setPersistence 與 inMemoryPersistence 模組
     import { getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken, setPersistence, inMemoryPersistence } from 'firebase/auth';
     import { getFirestore, doc, setDoc, onSnapshot, collection, updateDoc, arrayUnion } from 'firebase/firestore';
 
@@ -80,10 +78,8 @@
 
       const [masterUnits, setMasterUnits] = useState({}); 
       
-      // 將匯款紀錄分為「已對帳(正式寫入青森苑)」與「待對帳(暫存區)」
       const [reconciledRems, setReconciledRems] = useState([]); 
       const [pendingRems, setPendingRems] = useState([]);
-      
       const [invoices, setInvoices] = useState({});       
 
       useEffect(() => {
@@ -92,24 +88,21 @@
             if (typeof window !== 'undefined' && window.__initial_auth_token) {
               await signInWithCustomToken(auth, window.__initial_auth_token);
             } else {
-              try {
-                // 正常嘗試登入
-                await signInAnonymously(auth);
-              } catch (innerError) {
-                // 核心修復：如果被 LINE 擋住 localStorage 權限，自動切換為純記憶體模式
-                console.warn("標準連線受阻，嘗試自動切換為記憶體模式:", innerError);
-                await setPersistence(auth, inMemoryPersistence);
-                await signInAnonymously(auth);
-              }
+              // 【終極修復】：不再嘗試正常登入，直接「強制」使用純記憶體模式。
+              // 這樣可以 100% 繞過三星瀏覽器、LINE、以及 Chrome 嚴格隱私模式的所有暫存阻擋。
+              await setPersistence(auth, inMemoryPersistence);
+              await signInAnonymously(auth);
             }
           } catch (error) {
-            console.error("登入初始化仍失敗:", error);
+            console.error("登入初始化失敗:", error);
             setAuthError(true);
           }
         };
         
         initAuth();
-        const unsubscribeAuth = onAuthStateChanged(auth, (u) => setUser(u));
+        const unsubscribeAuth = onAuthStateChanged(auth, (u) => {
+          if (u) setUser(u);
+        });
         return () => unsubscribeAuth();
       }, []);
 
@@ -117,8 +110,8 @@
       useEffect(() => {
         if (isReady || authError) return;
         const timer = setTimeout(() => {
-          setLoadingMsg("連線時間較長... 若持續轉圈，請點選右上角圖示，選擇「使用預設瀏覽器 (Safari / Chrome) 開啟」。");
-        }, 4000);
+          setLoadingMsg("網路連線似乎較慢，請稍候... 若持續轉圈，請嘗試重新載入網頁。");
+        }, 5000);
         return () => clearTimeout(timer);
       }, [isReady, authError]);
 
@@ -127,7 +120,6 @@
 
         const appId = typeof window !== 'undefined' && window.__app_id ? window.__app_id : defaultAppId;
         
-        // 1. 監聽已對帳紀錄 (青森苑系統會讀取的正式資料庫 custom/additions)
         const unsubCustom = onSnapshot(
           doc(db, 'artifacts', appId, 'public', 'data', 'custom', 'additions'), 
           (snap) => {
@@ -140,7 +132,6 @@
           (error) => console.error("讀取已對帳紀錄失敗:", error)
         );
 
-        // 2. 監聽待對帳紀錄 (住戶剛送出，尚未正式進入青森苑的暫存區)
         const unsubPending = onSnapshot(
           doc(db, 'artifacts', appId, 'public', 'data', 'custom', 'pending_remittances'), 
           (snap) => {
@@ -168,11 +159,9 @@
             snap.forEach(docSnap => {
               const rows = docSnap.data().rows || [];
               rows.forEach(row => {
-                // 寬鬆比對：取得樓層與編號
                 let f = String(row['樓層'] || '').trim().replace(/\.0$/, '');
                 let u = String(row['編號'] || '').trim().replace(/\.0$/, '');
                 
-                // 防呆：如果表格裡只有填寫「戶別」欄位 (例如: 10A1)
                 const combined = String(row['戶別'] || row['戶名'] || '').trim().replace(/\.0$/, '');
                 if (combined && (!f || !u)) {
                   const match = combined.match(/^(\d+)([A-Z]\d*)$/i);
@@ -186,13 +175,11 @@
                     units[unitKey] = { floor: f, unit: u, buyer: '未填寫', stages: {} };
                   }
 
-                  // 1. 抓取買方名稱 (支援買方、姓名、客戶名稱)
                   const buyer = row['買方'] || row['姓名'] || row['客戶名稱'] || '';
                   if (buyer.trim() !== '' && units[unitKey].buyer === '未填寫') {
                     units[unitKey].buyer = buyer.trim();
                   }
 
-                  // 2. 自動迴圈抓取「所有期款」的應收/已付/未付金額
                   PAYMENT_STAGES.forEach(stage => {
                     const stKey = stage.k;
                     let contractAmt = 0;
@@ -209,7 +196,6 @@
                       }
                     });
 
-                    // 初步計算餘額
                     let finalUnpaid = 0;
                     if (!isNaN(unpaidAmt) && unpaidAmt !== 0) {
                        finalUnpaid = unpaidAmt;
@@ -217,7 +203,6 @@
                        finalUnpaid = contractAmt - paidAmt;
                     }
 
-                    // 強制優先讀取：若有明確標示的欄位名稱 (例如：2F-未付 或 2F-應收)
                     if (row[`${stKey}-未付`] !== undefined && String(row[`${stKey}-未付`]).trim() !== '') {
                         finalUnpaid = parseFloat(String(row[`${stKey}-未付`]).replace(/,/g, '')) || 0;
                     } else if (row[`${stKey}-應收`] !== undefined && String(row[`${stKey}-應收`]).trim() !== '') {
@@ -226,7 +211,6 @@
                         finalUnpaid = specificContract - specificPaid;
                     }
 
-                    // 儲存進該戶別的 stages 物件中，若原本已有數值則累加 (處理跨 Sheet 相同欄位)
                     units[unitKey].stages[stKey] = (units[unitKey].stages[stKey] || 0) + finalUnpaid;
                   });
                 }
@@ -269,22 +253,29 @@
         return (
           <div className="min-h-screen flex items-center justify-center bg-[#F9F8F6] p-4 sm:p-6">
             <div className="bg-white p-8 rounded-2xl shadow-sm border border-[#EAEAEA] text-center max-w-md w-full">
-              <AlertCircle className="w-16 h-16 text-red-400 mx-auto mb-4" />
-              <h2 className="text-2xl font-bold text-gray-800 mb-3">請切換瀏覽器開啟</h2>
+              <AlertCircle className="w-16 h-16 text-orange-400 mx-auto mb-4" />
+              <h2 className="text-2xl font-bold text-gray-800 mb-3">網路連線異常</h2>
               <p className="text-base text-gray-600 mb-6 text-left leading-relaxed">
-                因為 LINE 等軟體的內建瀏覽器限制，系統無法安全連線。<br/><br/>
-                請點擊下方按鈕，系統將自動為您使用手機的<strong>「預設瀏覽器 (Chrome / Safari)」</strong>重新開啟本網頁。
+                系統暫時無法與資料庫建立穩定連線，這可能是由於您的網路環境或手機瀏覽器設定較為嚴格所導致。<br/><br/>
+                請點擊下方按鈕重新載入網頁，或更換網路環境後再試一次。
               </p>
+              <button
+                onClick={() => window.location.reload()}
+                className="w-full flex justify-center items-center py-4 px-4 bg-[#8BA39E] hover:bg-[#7A918C] text-white rounded-xl font-bold text-lg transition-colors shadow-md mb-3"
+              >
+                <RefreshCw className="w-6 h-6 mr-2" />
+                重新嘗試連線
+              </button>
               <button
                 onClick={() => {
                   const currentUrl = window.location.href;
                   const sep = currentUrl.includes('?') ? '&' : '?';
                   window.location.href = currentUrl + sep + 'openExternalBrowser=1';
                 }}
-                className="w-full flex justify-center items-center py-4 px-4 bg-[#8BA39E] hover:bg-[#7A918C] text-white rounded-xl font-bold text-lg transition-colors shadow-md"
+                className="w-full flex justify-center items-center py-3 px-4 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl font-bold text-base transition-colors"
               >
-                <ExternalLink className="w-6 h-6 mr-2" />
-                點我使用瀏覽器開啟
+                <ExternalLink className="w-5 h-5 mr-2" />
+                點我使用外部瀏覽器開啟
               </button>
             </div>
           </div>
@@ -314,7 +305,6 @@
       const [submitSuccess, setSubmitSuccess] = useState(false);
       const [isSubmitting, setIsSubmitting] = useState(false);
 
-      // 排序戶別：依據樓層(數字)與編號(字母)順序
       const sortedUnitKeys = Object.keys(masterUnits).sort((a, b) => {
         const fA = parseInt(a.split('_')[0], 10) || 0;
         const fB = parseInt(b.split('_')[0], 10) || 0;
@@ -340,7 +330,6 @@
         };
 
         try {
-          // 寫入到待對帳暫存區 (pending_remittances)
           const docRef = doc(getFirestore(), 'artifacts', appId, 'public', 'data', 'custom', 'pending_remittances');
           await setDoc(docRef, { remittances: arrayUnion(newRemittance) }, { merge: true });
           
@@ -451,7 +440,6 @@
     function AdminDashboard({ pendingRems, reconciledRems, invoices, masterUnits, handleLogout }) {
       const [selectedStage, setSelectedStage] = useState('使照');
 
-      // 組合所有匯款紀錄 (包含待對帳與已對帳)
       const combinedRemittances = useMemo(() => {
         const p = pendingRems.map(r => ({ ...r, _isReconciled: false }));
         const r = reconciledRems.map(r => ({ ...r, _isReconciled: true }));
@@ -473,27 +461,22 @@
         }
       };
 
-      // 切換「已對帳」狀態：在暫存區與正式區之間搬移資料
       const handleToggleReconcile = async (rem, checked) => {
         const appId = typeof window !== 'undefined' && window.__app_id ? window.__app_id : defaultAppId;
         const additionsRef = doc(getFirestore(), 'artifacts', appId, 'public', 'data', 'custom', 'additions');
         const pendingRef = doc(getFirestore(), 'artifacts', appId, 'public', 'data', 'custom', 'pending_remittances');
 
-        // 移除內部使用標記再儲存
         const cleanRem = { ...rem };
         delete cleanRem._isReconciled;
 
         try {
-          // 同步紀錄發票的勾選狀態以維持 UI 邏輯
           updateInvoiceData(rem.id, '已對帳', checked);
 
           if (checked) {
-            // 打勾：從 pending 移除，寫入正式的 additions (青森苑將正式吃進這筆帳)
             const newPending = pendingRems.filter(r => r.id !== rem.id);
             await setDoc(pendingRef, { remittances: newPending }, { merge: true });
             await setDoc(additionsRef, { remittances: arrayUnion(cleanRem) }, { merge: true });
           } else {
-            // 取消打勾：從正式 additions 撤回，退回暫存區 pending
             const newReconciled = reconciledRems.filter(r => r.id !== rem.id);
             await setDoc(additionsRef, { remittances: newReconciled }, { merge: true });
             await setDoc(pendingRef, { remittances: arrayUnion(cleanRem) }, { merge: true });
@@ -510,12 +493,10 @@
         
         try {
           if (rem._isReconciled) {
-            // 如果已經是已對帳狀態，從 additions 刪除
             const docRef = doc(getFirestore(), 'artifacts', appId, 'public', 'data', 'custom', 'additions');
             const updated = reconciledRems.filter(r => r.id !== rem.id);
             await setDoc(docRef, { remittances: updated }, { merge: true });
           } else {
-            // 若為待對帳，從 pending 刪除
             const docRef = doc(getFirestore(), 'artifacts', appId, 'public', 'data', 'custom', 'pending_remittances');
             const updated = pendingRems.filter(r => r.id !== rem.id);
             await setDoc(docRef, { remittances: updated }, { merge: true });
@@ -530,7 +511,6 @@
 
       return (
         <div className="py-6 px-4 sm:px-6 lg:px-8">
-          {/* 頂部導航與期款切換器 */}
           <div className="max-w-7xl mx-auto mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center bg-white p-4 rounded-xl shadow-sm border border-[#EAEAEA] gap-4">
             <div className="flex items-center">
               <Lock className="w-5 h-5 text-[#8BA39E] mr-2" />
@@ -573,10 +553,7 @@
                     const master = masterUnits[sub.unitKey];
                     const invData = invoices[sub.id] || {};
                     
-                    // 動態抓取選擇的期款尚欠餘額
                     const expectedAmt = master?.stages?.[selectedStage] || 0;
-                    
-                    // 從紀錄所在的陣列判斷是否已對帳
                     const isReconciled = sub._isReconciled; 
 
                     return (
@@ -606,7 +583,6 @@
                         <td className="p-4">
                           <div className="flex items-center">
                             <span className="font-semibold text-[#8BA39E]">${(sub.匯款金額 || 0).toLocaleString()}</span>
-                            {/* 加入比對成功/失敗的視覺提示 */}
                             {sub.匯款金額 === expectedAmt && expectedAmt > 0 ? (
                               <CheckCircle className="w-4 h-4 text-green-500 ml-2" title="金額相符" />
                             ) : expectedAmt > 0 ? (
