@@ -27,7 +27,7 @@
   <script type="text/babel" data-type="module">
     import React, { useState, useEffect, useMemo } from 'react';
     import { createRoot } from 'react-dom/client';
-    import { CheckCircle, XCircle, Send, Edit3, Lock, LogIn, LogOut, Building, Database, Trash2 } from 'lucide-react';
+    import { CheckCircle, XCircle, Send, Edit3, Lock, LogIn, LogOut, Building, Database, Trash2, AlertCircle } from 'lucide-react';
     import { initializeApp } from 'firebase/app';
     import { getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
     import { getFirestore, doc, setDoc, onSnapshot, collection, updateDoc, arrayUnion } from 'firebase/firestore';
@@ -73,6 +73,8 @@
       
       const [user, setUser] = useState(null);
       const [isReady, setIsReady] = useState(false);
+      const [authError, setAuthError] = useState(false);
+      const [loadingMsg, setLoadingMsg] = useState("連線資料庫中...");
 
       const [masterUnits, setMasterUnits] = useState({}); 
       
@@ -92,6 +94,7 @@
             }
           } catch (error) {
             console.error("登入初始化失敗:", error);
+            setAuthError(true);
           }
         };
         
@@ -99,6 +102,15 @@
         const unsubscribeAuth = onAuthStateChanged(auth, (u) => setUser(u));
         return () => unsubscribeAuth();
       }, []);
+
+      // 超時防卡死機制：如果在 LINE 開啟導致長時間沒有回應，提示用戶切換瀏覽器
+      useEffect(() => {
+        if (isReady || authError) return;
+        const timer = setTimeout(() => {
+          setLoadingMsg("連線時間較長... 若持續轉圈，請點選右上角圖示，選擇「使用預設瀏覽器 (Safari / Chrome) 開啟」。");
+        }, 4000);
+        return () => clearTimeout(timer);
+      }, [isReady, authError]);
 
       useEffect(() => {
         if (!user) return;
@@ -243,8 +255,29 @@
         window.location.hash = '';
       };
 
+      if (authError) {
+        return (
+          <div className="min-h-screen flex items-center justify-center bg-[#F9F8F6] p-6">
+            <div className="bg-white p-8 rounded-2xl shadow-sm border border-[#EAEAEA] text-center max-w-md">
+              <AlertCircle className="w-12 h-12 text-red-400 mx-auto mb-4" />
+              <h2 className="text-xl font-bold text-gray-800 mb-2">瀏覽器環境受限</h2>
+              <p className="text-sm text-gray-600 mb-4 text-left">您目前可能使用的是 LINE 內建瀏覽器或無痕模式，導致系統無法正常連線資料庫。</p>
+              <div className="bg-gray-50 p-4 rounded-lg text-left border border-gray-200">
+                <p className="text-sm font-bold text-[#8BA39E]">💡 解決方式：</p>
+                <p className="text-sm text-gray-600 mt-1">請點擊畫面上方或右上角的圖示，並選擇<strong className="text-gray-800">「使用預設瀏覽器開啟」</strong>(Safari 或 Chrome) 即可正常使用。</p>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
       if (!isReady) {
-        return <div className="min-h-screen flex items-center justify-center bg-[#F9F8F6]"><div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#8BA39E]"></div></div>;
+        return (
+          <div className="min-h-screen flex flex-col items-center justify-center bg-[#F9F8F6] p-6">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#8BA39E] mb-6"></div>
+            <p className="text-[#8BA39E] font-medium text-sm text-center max-w-xs leading-relaxed">{loadingMsg}</p>
+          </div>
+        );
       }
 
       return (
