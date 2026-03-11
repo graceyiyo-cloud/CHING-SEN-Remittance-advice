@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>匯款資訊回報系統</title>
+  <title>瀞川日禾-匯款資訊回報</title>
   
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -25,16 +25,13 @@
   <div id="root"></div>
 
   <script type="text/babel" data-type="module">
-    import React, { useState, useEffect, useMemo } from 'react';
+    import React, { useState, useEffect } from 'react';
     import { createRoot } from 'react-dom/client';
-    import { CheckCircle, XCircle, Send, Edit3, Lock, LogIn, LogOut, Building, Database, Trash2, AlertCircle, ExternalLink, RefreshCw } from 'lucide-react';
-    import { initializeApp } from 'firebase/app';
-    import { getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken, setPersistence, inMemoryPersistence } from 'firebase/auth';
-    import { getFirestore, doc, setDoc, onSnapshot, collection, updateDoc, arrayUnion } from 'firebase/firestore';
+    import { CheckCircle, Send, Building } from 'lucide-react';
+    import { initializeApp, getApps } from 'firebase/app';
+    import { getAuth, initializeAuth, inMemoryPersistence, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
+    import { getFirestore, doc, setDoc, onSnapshot, collection, arrayUnion } from 'firebase/firestore';
 
-    // ==========================================
-    // 1. Firebase 初始化 (與青森苑系統共用設定)
-    // ==========================================
     const firebaseConfig = typeof window !== 'undefined' && window.__firebase_config 
       ? JSON.parse(window.__firebase_config) 
       : {
@@ -46,112 +43,58 @@
           appId: "1:620488371764:web:d5eb9d1dff62d66bab2461"
         };
 
-    const app = initializeApp(firebaseConfig);
-    const auth = getAuth(app);
+    const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0];
+    
+    // 初始化 Auth，處理不同的環境 (強制記憶體模式避免手機阻擋)
+    let auth;
+    try {
+      auth = initializeAuth(app, { persistence: inMemoryPersistence });
+    } catch (e) {
+      auth = getAuth(app);
+    }
+    
     const db = getFirestore(app);
     const defaultAppId = typeof window !== 'undefined' && window.__app_id ? window.__app_id : 'qingsenyuan-admin'; 
 
-    // 定義所有期款階段，供系統全局使用
-    const PAYMENT_STAGES = [
-      { k: '訂金', l: '訂金' },
-      { k: '簽約', l: '簽約金' },
-      { k: '2F', l: '2F工程' },
-      { k: '5F', l: '5F工程' },
-      { k: '7F', l: '7F工程' },
-      { k: '10F', l: '10F工程' },
-      { k: '13F', l: '13F工程' },
-      { k: '使照', l: '使照款' },
-      { k: '銀貸', l: '銀貸' },
-      { k: '交屋', l: '交屋款' }
-    ];
-
     function App() {
-      const [route, setRoute] = useState('form');
-      const [isAdminAuth, setIsAdminAuth] = useState(false);
-      const [passwordInput, setPasswordInput] = useState('');
-      const [loginError, setLoginError] = useState('');
-      
       const [user, setUser] = useState(null);
+      const [authReady, setAuthReady] = useState(false); // 新增：安全鎖機制
       const [isReady, setIsReady] = useState(false);
-      const [authError, setAuthError] = useState(false);
-      const [loadingMsg, setLoadingMsg] = useState("連線資料庫中...");
-
       const [masterUnits, setMasterUnits] = useState({}); 
-      
-      const [reconciledRems, setReconciledRems] = useState([]); 
-      const [pendingRems, setPendingRems] = useState([]);
-      const [invoices, setInvoices] = useState({});       
+
+      const [formData, setFormData] = useState({ unitKey: '', remitDate: '', accountLast5: '', remitterName: '', amount: '', notes: '' });
+      const [submitSuccess, setSubmitSuccess] = useState(false);
+      const [isSubmitting, setIsSubmitting] = useState(false);
 
       useEffect(() => {
         const initAuth = async () => {
           try {
+            // 確保先取得授權憑證
             if (typeof window !== 'undefined' && window.__initial_auth_token) {
               await signInWithCustomToken(auth, window.__initial_auth_token);
             } else {
-              // 【終極修復】：不再嘗試正常登入，直接「強制」使用純記憶體模式。
-              // 這樣可以 100% 繞過三星瀏覽器、LINE、以及 Chrome 嚴格隱私模式的所有暫存阻擋。
-              await setPersistence(auth, inMemoryPersistence);
               await signInAnonymously(auth);
             }
+            // 憑證拿到了，才解開安全鎖
+            setAuthReady(true);
           } catch (error) {
             console.error("登入初始化失敗:", error);
-            setAuthError(true);
           }
         };
         
         initAuth();
+
         const unsubscribeAuth = onAuthStateChanged(auth, (u) => {
-          if (u) setUser(u);
+          setUser(u);
         });
         return () => unsubscribeAuth();
       }, []);
 
-      // 超時防卡死機制：如果在 LINE 開啟導致長時間沒有回應，提示用戶切換瀏覽器
       useEffect(() => {
-        if (isReady || authError) return;
-        const timer = setTimeout(() => {
-          setLoadingMsg("網路連線似乎較慢，請稍候... 若持續轉圈，請嘗試重新載入網頁。");
-        }, 5000);
-        return () => clearTimeout(timer);
-      }, [isReady, authError]);
-
-      useEffect(() => {
-        if (!user) return;
-
-        const appId = typeof window !== 'undefined' && window.__app_id ? window.__app_id : defaultAppId;
+        // 【關鍵修復】必須等到 user 存在 且 authReady 解鎖，才去讀取資料庫，避免 Permission Denied
+        if (!user || !authReady) return;
         
-        const unsubCustom = onSnapshot(
-          doc(db, 'artifacts', appId, 'public', 'data', 'custom', 'additions'), 
-          (snap) => {
-            if (snap.exists()) {
-              setReconciledRems(snap.data().remittances || []);
-            } else {
-              setReconciledRems([]);
-            }
-          },
-          (error) => console.error("讀取已對帳紀錄失敗:", error)
-        );
-
-        const unsubPending = onSnapshot(
-          doc(db, 'artifacts', appId, 'public', 'data', 'custom', 'pending_remittances'), 
-          (snap) => {
-            if (snap.exists()) {
-              setPendingRems(snap.data().remittances || []);
-            } else {
-              setPendingRems([]);
-            }
-          },
-          (error) => console.error("讀取待對帳紀錄失敗:", error)
-        );
-
-        const unsubInv = onSnapshot(
-          doc(db, 'artifacts', appId, 'public', 'data', 'invoices', 'all_invoices'), 
-          (snap) => {
-            if (snap.exists()) setInvoices(snap.data());
-          },
-          (error) => console.error("讀取發票資料失敗:", error)
-        );
-
+        const appId = defaultAppId;
         const unsubMaster = onSnapshot(
           collection(db, 'artifacts', appId, 'public', 'data', 'master_sheets'), 
           (snap) => {
@@ -161,58 +104,16 @@
               rows.forEach(row => {
                 let f = String(row['樓層'] || '').trim().replace(/\.0$/, '');
                 let u = String(row['編號'] || '').trim().replace(/\.0$/, '');
-                
                 const combined = String(row['戶別'] || row['戶名'] || '').trim().replace(/\.0$/, '');
                 if (combined && (!f || !u)) {
                   const match = combined.match(/^(\d+)([A-Z]\d*)$/i);
                   if (match) { f = match[1]; u = match[2]; } else { u = combined; }
                 }
-
                 if (f && u && !f.includes('合計') && !f.includes('總計')) {
                   const unitKey = `${f}_${u}`;
-                  
                   if (!units[unitKey]) {
-                    units[unitKey] = { floor: f, unit: u, buyer: '未填寫', stages: {} };
+                    units[unitKey] = { floor: f, unit: u };
                   }
-
-                  const buyer = row['買方'] || row['姓名'] || row['客戶名稱'] || '';
-                  if (buyer.trim() !== '' && units[unitKey].buyer === '未填寫') {
-                    units[unitKey].buyer = buyer.trim();
-                  }
-
-                  PAYMENT_STAGES.forEach(stage => {
-                    const stKey = stage.k;
-                    let contractAmt = 0;
-                    let paidAmt = 0;
-                    let unpaidAmt = NaN;
-
-                    Object.keys(row).forEach(key => {
-                      const valStr = String(row[key] || '').replace(/,/g, '');
-                      const val = parseFloat(valStr) || 0;
-                      if (key.includes(stKey)) {
-                         if (key.includes('應收') || key.includes('應付')) contractAmt += val;
-                         if (key.includes('已付') || key.includes('實收')) paidAmt += val;
-                         if (key.includes('未付') || key.includes('餘額')) unpaidAmt = parseFloat(valStr);
-                      }
-                    });
-
-                    let finalUnpaid = 0;
-                    if (!isNaN(unpaidAmt) && unpaidAmt !== 0) {
-                       finalUnpaid = unpaidAmt;
-                    } else if (contractAmt > 0) {
-                       finalUnpaid = contractAmt - paidAmt;
-                    }
-
-                    if (row[`${stKey}-未付`] !== undefined && String(row[`${stKey}-未付`]).trim() !== '') {
-                        finalUnpaid = parseFloat(String(row[`${stKey}-未付`]).replace(/,/g, '')) || 0;
-                    } else if (row[`${stKey}-應收`] !== undefined && String(row[`${stKey}-應收`]).trim() !== '') {
-                        const specificContract = parseFloat(String(row[`${stKey}-應收`]).replace(/,/g, '')) || 0;
-                        const specificPaid = parseFloat(String(row[`${stKey}-已付`] || '0').replace(/,/g, '')) || 0;
-                        finalUnpaid = specificContract - specificPaid;
-                    }
-
-                    units[unitKey].stages[stKey] = (units[unitKey].stages[stKey] || 0) + finalUnpaid;
-                  });
                 }
               });
             });
@@ -220,90 +121,12 @@
             setIsReady(true);
           },
           (error) => {
-            console.error("讀取母檔資料失敗:", error);
-            setIsReady(true); 
+            console.error("載入戶別失敗:", error);
+            setIsReady(true);
           }
         );
-
-        return () => { unsubCustom(); unsubPending(); unsubInv(); unsubMaster(); };
-      }, [user]);
-
-      useEffect(() => {
-        const handleHashChange = () => setRoute(window.location.hash === '#admin' ? 'admin' : 'form');
-        window.addEventListener('hashchange', handleHashChange);
-        handleHashChange();
-        return () => window.removeEventListener('hashchange', handleHashChange);
-      }, []);
-
-      const handleLogin = (e) => {
-        e.preventDefault();
-        if (passwordInput === 'admin123') {
-          setIsAdminAuth(true); setLoginError(''); setPasswordInput('');
-        } else {
-          setLoginError('密碼錯誤');
-        }
-      };
-
-      const handleLogout = () => {
-        setIsAdminAuth(false);
-        window.location.hash = '';
-      };
-
-      if (authError) {
-        return (
-          <div className="min-h-screen flex items-center justify-center bg-[#F9F8F6] p-4 sm:p-6">
-            <div className="bg-white p-8 rounded-2xl shadow-sm border border-[#EAEAEA] text-center max-w-md w-full">
-              <AlertCircle className="w-16 h-16 text-orange-400 mx-auto mb-4" />
-              <h2 className="text-2xl font-bold text-gray-800 mb-3">網路連線異常</h2>
-              <p className="text-base text-gray-600 mb-6 text-left leading-relaxed">
-                系統暫時無法與資料庫建立穩定連線，這可能是由於您的網路環境或手機瀏覽器設定較為嚴格所導致。<br/><br/>
-                請點擊下方按鈕重新載入網頁，或更換網路環境後再試一次。
-              </p>
-              <button
-                onClick={() => window.location.reload()}
-                className="w-full flex justify-center items-center py-4 px-4 bg-[#8BA39E] hover:bg-[#7A918C] text-white rounded-xl font-bold text-lg transition-colors shadow-md mb-3"
-              >
-                <RefreshCw className="w-6 h-6 mr-2" />
-                重新嘗試連線
-              </button>
-              <button
-                onClick={() => {
-                  const currentUrl = window.location.href;
-                  const sep = currentUrl.includes('?') ? '&' : '?';
-                  window.location.href = currentUrl + sep + 'openExternalBrowser=1';
-                }}
-                className="w-full flex justify-center items-center py-3 px-4 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-xl font-bold text-base transition-colors"
-              >
-                <ExternalLink className="w-5 h-5 mr-2" />
-                點我使用外部瀏覽器開啟
-              </button>
-            </div>
-          </div>
-        );
-      }
-
-      if (!isReady) {
-        return (
-          <div className="min-h-screen flex flex-col items-center justify-center bg-[#F9F8F6] p-6">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#8BA39E] mb-6"></div>
-            <p className="text-[#8BA39E] font-medium text-sm text-center max-w-xs leading-relaxed">{loadingMsg}</p>
-          </div>
-        );
-      }
-
-      return (
-        <div className="min-h-screen bg-[#F9F8F6] text-[#4A4A4A] font-sans relative">
-          {route === 'form' && <ResidentForm masterUnits={masterUnits} />}
-          {route === 'admin' && !isAdminAuth && <AdminLogin passwordInput={passwordInput} setPasswordInput={setPasswordInput} handleLogin={handleLogin} loginError={loginError} />}
-          {route === 'admin' && isAdminAuth && <AdminDashboard pendingRems={pendingRems} reconciledRems={reconciledRems} invoices={invoices} masterUnits={masterUnits} handleLogout={handleLogout} />}
-        </div>
-      );
-    }
-
-    function ResidentForm({ masterUnits }) {
-      const [formData, setFormData] = useState({ unitKey: '', remitDate: '', accountLast5: '', remitterName: '', amount: '', notes: '' });
-      const [submitSuccess, setSubmitSuccess] = useState(false);
-      const [isSubmitting, setIsSubmitting] = useState(false);
+        return () => unsubMaster();
+      }, [user, authReady]);
 
       const sortedUnitKeys = Object.keys(masterUnits).sort((a, b) => {
         const fA = parseInt(a.split('_')[0], 10) || 0;
@@ -314,8 +137,14 @@
 
       const handleFormSubmit = async (e) => {
         e.preventDefault();
+        
+        if (!user || !authReady) {
+            alert("尚未建立安全連線，請稍後再試。");
+            return;
+        }
+
         setIsSubmitting(true);
-        const appId = typeof window !== 'undefined' && window.__app_id ? window.__app_id : defaultAppId;
+        const appId = defaultAppId;
         
         const newRemittance = {
           id: Date.now().toString(),
@@ -338,14 +167,23 @@
           setTimeout(() => setSubmitSuccess(false), 8000);
         } catch (error) {
           console.error("寫入失敗:", error);
-          alert("傳送失敗，請稍後再試。");
+          alert("傳送失敗，請確認網路連線後再試。");
         } finally {
           setIsSubmitting(false);
         }
       };
 
+      if (!isReady) {
+        return (
+          <div className="min-h-screen flex flex-col items-center justify-center bg-[#F9F8F6] p-6">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#8BA39E] mb-6"></div>
+            <p className="text-[#8BA39E] font-medium text-sm text-center">安全連線建立中...</p>
+          </div>
+        );
+      }
+
       return (
-        <div className="py-12 px-4 sm:px-6 lg:px-8">
+        <div className="min-h-screen bg-[#F9F8F6] text-[#4A4A4A] font-sans py-12 px-4 sm:px-6 lg:px-8">
           <div className="max-w-xl mx-auto bg-white p-8 md:p-10 rounded-2xl shadow-sm border border-[#EAEAEA]">
             <div className="mb-8 text-center">
               <div className="w-16 h-16 bg-[#F0EFEA] rounded-full flex items-center justify-center mx-auto mb-4">
@@ -412,208 +250,6 @@
                 <Send className="w-5 h-5 mr-2" /> {isSubmitting ? '傳送中...' : '確認送出回報'}
               </button>
             </form>
-          </div>
-        </div>
-      );
-    }
-
-    function AdminLogin({ passwordInput, setPasswordInput, handleLogin, loginError }) {
-      return (
-        <div className="min-h-screen flex items-center justify-center px-4">
-          <div className="max-w-md w-full bg-white p-8 rounded-2xl shadow-sm border border-[#EAEAEA]">
-            <div className="text-center mb-8">
-              <div className="w-12 h-12 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4"><Lock className="w-6 h-6 text-gray-600" /></div>
-              <h2 className="text-xl font-bold text-gray-800">對帳系統後台登入</h2>
-            </div>
-            <form onSubmit={handleLogin} className="space-y-6">
-              <div>
-                <input type="password" required placeholder="請輸入密碼" value={passwordInput} onChange={(e) => setPasswordInput(e.target.value)} className="w-full px-4 py-3 border rounded-lg focus:ring-2 focus:ring-gray-800 text-center tracking-widest outline-none" />
-                {loginError && <p className="text-red-500 text-sm mt-2 text-center">{loginError}</p>}
-              </div>
-              <button type="submit" className="w-full flex justify-center items-center bg-gray-800 hover:bg-gray-900 text-white py-3 rounded-lg font-medium"><LogIn className="w-5 h-5 mr-2" />登入</button>
-            </form>
-          </div>
-        </div>
-      );
-    }
-
-    function AdminDashboard({ pendingRems, reconciledRems, invoices, masterUnits, handleLogout }) {
-      const [selectedStage, setSelectedStage] = useState('使照');
-
-      const combinedRemittances = useMemo(() => {
-        const p = pendingRems.map(r => ({ ...r, _isReconciled: false }));
-        const r = reconciledRems.map(r => ({ ...r, _isReconciled: true }));
-        return [...p, ...r].sort((a, b) => (b.id || 0) - (a.id || 0));
-      }, [pendingRems, reconciledRems]);
-
-      const updateInvoiceData = async (remittanceId, field, value) => {
-        const appId = typeof window !== 'undefined' && window.__app_id ? window.__app_id : defaultAppId;
-        const docRef = doc(getFirestore(), 'artifacts', appId, 'public', 'data', 'invoices', 'all_invoices');
-        
-        const updatePayload = {
-          [`${remittanceId}.${field}`]: value
-        };
-        
-        try {
-          await updateDoc(docRef, updatePayload);
-        } catch (e) {
-          await setDoc(docRef, { [remittanceId]: { [field]: value } }, { merge: true });
-        }
-      };
-
-      const handleToggleReconcile = async (rem, checked) => {
-        const appId = typeof window !== 'undefined' && window.__app_id ? window.__app_id : defaultAppId;
-        const additionsRef = doc(getFirestore(), 'artifacts', appId, 'public', 'data', 'custom', 'additions');
-        const pendingRef = doc(getFirestore(), 'artifacts', appId, 'public', 'data', 'custom', 'pending_remittances');
-
-        const cleanRem = { ...rem };
-        delete cleanRem._isReconciled;
-
-        try {
-          updateInvoiceData(rem.id, '已對帳', checked);
-
-          if (checked) {
-            const newPending = pendingRems.filter(r => r.id !== rem.id);
-            await setDoc(pendingRef, { remittances: newPending }, { merge: true });
-            await setDoc(additionsRef, { remittances: arrayUnion(cleanRem) }, { merge: true });
-          } else {
-            const newReconciled = reconciledRems.filter(r => r.id !== rem.id);
-            await setDoc(additionsRef, { remittances: newReconciled }, { merge: true });
-            await setDoc(pendingRef, { remittances: arrayUnion(cleanRem) }, { merge: true });
-          }
-        } catch (error) {
-          console.error("狀態切換失敗:", error);
-          alert("狀態切換失敗，請稍後再試。");
-        }
-      };
-
-      const handleDeleteRemittance = async (rem) => {
-        if (!window.confirm("確定要刪除這筆回報紀錄嗎？")) return;
-        const appId = typeof window !== 'undefined' && window.__app_id ? window.__app_id : defaultAppId;
-        
-        try {
-          if (rem._isReconciled) {
-            const docRef = doc(getFirestore(), 'artifacts', appId, 'public', 'data', 'custom', 'additions');
-            const updated = reconciledRems.filter(r => r.id !== rem.id);
-            await setDoc(docRef, { remittances: updated }, { merge: true });
-          } else {
-            const docRef = doc(getFirestore(), 'artifacts', appId, 'public', 'data', 'custom', 'pending_remittances');
-            const updated = pendingRems.filter(r => r.id !== rem.id);
-            await setDoc(docRef, { remittances: updated }, { merge: true });
-          }
-        } catch (error) {
-          console.error("刪除失敗:", error);
-          alert("刪除失敗，請稍後再試。");
-        }
-      };
-
-      const stageLabel = PAYMENT_STAGES.find(s => s.k === selectedStage)?.l || selectedStage;
-
-      return (
-        <div className="py-6 px-4 sm:px-6 lg:px-8">
-          <div className="max-w-7xl mx-auto mb-6 flex flex-col sm:flex-row justify-between items-start sm:items-center bg-white p-4 rounded-xl shadow-sm border border-[#EAEAEA] gap-4">
-            <div className="flex items-center">
-              <Lock className="w-5 h-5 text-[#8BA39E] mr-2" />
-              <h1 className="text-lg font-bold text-gray-800">內部對帳管理中心</h1>
-            </div>
-            
-            <div className="flex items-center gap-4 w-full sm:w-auto justify-between sm:justify-end">
-              <div className="flex items-center bg-gray-50 px-3 py-1.5 rounded-lg border border-gray-200">
-                <span className="text-sm font-bold text-gray-600 mr-2">對帳期款目標：</span>
-                <select 
-                  value={selectedStage}
-                  onChange={(e) => setSelectedStage(e.target.value)}
-                  className="bg-white border border-gray-300 rounded text-sm px-2 py-1 outline-none focus:ring-1 focus:ring-[#8BA39E] text-gray-700 font-medium"
-                >
-                  {PAYMENT_STAGES.map(s => (
-                    <option key={s.k} value={s.k}>{s.l}</option>
-                  ))}
-                </select>
-              </div>
-              <button onClick={handleLogout} className="flex items-center text-sm text-gray-500 hover:text-gray-800 whitespace-nowrap"><LogOut className="w-4 h-4 mr-1" /> 登出</button>
-            </div>
-          </div>
-
-          <div className="max-w-7xl mx-auto bg-white rounded-xl shadow-sm border border-[#EAEAEA] overflow-hidden">
-            <div className="overflow-x-auto w-full">
-              <table className="w-full text-left border-collapse whitespace-nowrap">
-                <thead>
-                  <tr className="bg-[#F0EFEA] text-[#4A4A4A] text-sm">
-                    <th className="p-4 font-medium">狀態</th>
-                    <th className="p-4 font-medium">戶別 / 買方</th>
-                    <th className="p-4 font-medium">匯款日期 / 帳號資訊</th>
-                    <th className="p-4 font-medium">金額比對 ({stageLabel})</th>
-                    <th className="p-4 font-medium">發票日期 (自動同步)</th>
-                    <th className="p-4 font-medium">發票號碼 (自動同步)</th>
-                    <th className="p-4 font-medium text-center">操作</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100 text-sm">
-                  {combinedRemittances.map((sub) => {
-                    const master = masterUnits[sub.unitKey];
-                    const invData = invoices[sub.id] || {};
-                    
-                    const expectedAmt = master?.stages?.[selectedStage] || 0;
-                    const isReconciled = sub._isReconciled; 
-
-                    return (
-                      <tr key={sub.id} className="hover:bg-gray-50 transition-colors">
-                        <td className="p-4">
-                          <label className="flex items-center cursor-pointer">
-                            <input 
-                              type="checkbox" 
-                              checked={isReconciled} 
-                              onChange={(e) => handleToggleReconcile(sub, e.target.checked)} 
-                              className="w-5 h-5 text-[#8BA39E] rounded cursor-pointer" 
-                            />
-                            <span className={`ml-2 font-medium ${isReconciled ? 'text-green-600' : 'text-gray-400'}`}>
-                              {isReconciled ? '已對帳' : '待處理'}
-                            </span>
-                          </label>
-                        </td>
-                        <td className="p-4">
-                          <div className="font-semibold text-gray-800">{master ? `${master.floor}${master.unit}` : sub.unitKey}</div>
-                          <div className="text-xs text-gray-500">{master ? master.buyer : '未找到買方'}</div>
-                        </td>
-                        <td className="p-4">
-                          <div>{sub.匯款日期}</div>
-                          <div className="text-xs text-gray-500 font-mono">帳號: {sub.帳號後五碼 || '無資料'}</div>
-                          <div className="text-xs text-gray-500">戶名: {sub.匯款帳戶戶名 || '未填寫'}</div>
-                        </td>
-                        <td className="p-4">
-                          <div className="flex items-center">
-                            <span className="font-semibold text-[#8BA39E]">${(sub.匯款金額 || 0).toLocaleString()}</span>
-                            {sub.匯款金額 === expectedAmt && expectedAmt > 0 ? (
-                              <CheckCircle className="w-4 h-4 text-green-500 ml-2" title="金額相符" />
-                            ) : expectedAmt > 0 ? (
-                              <XCircle className="w-4 h-4 text-orange-400 ml-2" title="金額不符" />
-                            ) : null}
-                          </div>
-                          <div className="text-xs text-gray-500">應收{stageLabel}: ${expectedAmt.toLocaleString()}</div>
-                        </td>
-                        <td className="p-4">
-                          <input type="date" value={invData['發票日期'] ? invData['發票日期'].replace(/\//g, '-') : ''} onChange={(e) => updateInvoiceData(sub.id, '發票日期', e.target.value.replace(/-/g, '/'))} className="px-2 py-1 border rounded text-sm outline-none focus:ring-1 focus:ring-[#8BA39E]" />
-                        </td>
-                        <td className="p-4">
-                          <div className="flex items-center">
-                            <Edit3 className="w-4 h-4 text-gray-400 mr-1" />
-                            <input type="text" placeholder="例如: AB12345678" value={invData['發票號碼'] || ''} onChange={(e) => updateInvoiceData(sub.id, '發票號碼', e.target.value)} className="w-32 px-2 py-1 border rounded text-sm outline-none focus:ring-1 focus:ring-[#8BA39E] font-mono" />
-                          </div>
-                        </td>
-                        <td className="p-4 text-center">
-                          <button onClick={() => handleDeleteRemittance(sub)} className="text-red-400 hover:text-red-600 transition-colors p-1" title="刪除此紀錄">
-                            <Trash2 className="w-4 h-5 mx-auto" />
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                  {combinedRemittances.length === 0 && (
-                    <tr><td colSpan="7" className="p-8 text-center text-gray-400">目前尚無匯款回報紀錄</td></tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
           </div>
         </div>
       );
