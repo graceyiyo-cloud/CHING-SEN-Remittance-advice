@@ -73,7 +73,7 @@
       if (parts.length < 3) return dateStr;
       let y = parseInt(parts[0]);
       if (isNaN(y)) return dateStr;
-      if (y > 1911) y -= 1911; // 轉換為民國年
+      if (y > 1911) y -= 1911; 
       return `${y}/${parts[1]}/${parts[2]}`;
     };
 
@@ -137,23 +137,38 @@
         const unsubMaster = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'master_sheets'), (snap) => {
           const units = {};
           snap.forEach(docSnap => {
+            // 【修復：精確篩選母檔】避免加總到暫存表或其他非收款總表的文件
+            if (!docSnap.id.includes('收款總表')) return;
+
             docSnap.data().rows?.forEach(row => {
               let f = String(row['樓層'] || '').trim().replace(/\.0$/, '');
               let u = String(row['編號'] || '').trim().replace(/\.0$/, '');
               if (f && u && !f.includes('合計')) {
                 const key = `${f}_${u}`;
                 if (!units[key]) units[key] = { floor: f, unit: u, buyer: row['買方'] || row['姓名'] || '-', stages: {} };
+                
                 PAYMENT_STAGES.forEach(st => {
-                  let contract = 0, paid = 0, unpaid = NaN;
+                  let contractAmt = 0;
+                  let paidAmt = 0;
+                  let unpaidAmt = NaN;
+
                   Object.keys(row).forEach(rk => {
-                    const val = parseFloat(String(row[rk]).replace(/,/g, '')) || 0;
+                    const val = parseFloat(String(row[rk] || '').replace(/,/g, ''));
+                    // 檢查欄位名稱是否包含該期款名稱 (例如: 使照)
                     if (rk.includes(st.k)) {
-                       if (rk.includes('應收') || rk.includes('應付')) contract += val;
-                       if (rk.includes('已付') || rk.includes('實收')) paid += val;
-                       if (rk.includes('未付') || rk.includes('餘額')) unpaid = parseFloat(String(row[rk]).replace(/,/g, ''));
+                       if (rk.includes('應收') || rk.includes('應付')) contractAmt += isNaN(val) ? 0 : val;
+                       if (rk.includes('已付') || rk.includes('實收')) paidAmt += isNaN(val) ? 0 : val;
+                       if (rk.includes('未付') || rk.includes('餘額')) {
+                          if (!isNaN(val)) unpaidAmt = val;
+                       }
                     }
                   });
-                  units[key].stages[st.k] = (units[key].stages[st.k] || 0) + (!isNaN(unpaid) ? unpaid : (contract - paid));
+
+                  // 優先使用 Excel 內的「未付/餘額」欄位，若無則計算 應收 - 已付
+                  const finalStageUnpaid = !isNaN(unpaidAmt) ? unpaidAmt : (contractAmt - paidAmt);
+                  
+                  // 同一戶別在不同 doc 可能有分開計算，這裡進行合併
+                  units[key].stages[st.k] = (units[key].stages[st.k] || 0) + finalStageUnpaid;
                 });
               }
             });
@@ -178,7 +193,7 @@
           <div className="min-h-screen flex items-center justify-center bg-[#F9F8F6] p-4">
             <div className="bg-white p-10 rounded-3xl shadow-xl w-full max-w-md text-center space-y-8 border border-gray-100">
               <div className="flex justify-center"><div className="bg-[#8BA39E] p-5 rounded-2xl text-white shadow-lg"><Lock size={40} /></div></div>
-              <div><h1 className="text-2xl font-bold text-gray-800">內部對帳管理中心</h1><p className="text-gray-400 text-sm mt-2 font-medium tracking-wide">請登入您的 Google 帳號以存取後台</p></div>
+              <div><h1 className="text-2xl font-bold text-gray-800">內部對帳管理系統</h1><p className="text-gray-400 text-sm mt-2 font-medium tracking-wide">請登入您的 Google 帳號以存取後台</p></div>
               <button onClick={handleGoogleLogin} className="w-full flex items-center justify-center gap-3 bg-white border border-gray-200 py-4 rounded-xl font-bold text-gray-600 hover:bg-gray-50 transition-all shadow-sm active:scale-95 border-b-4 border-b-gray-100"><img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5"/> 使用 Google 帳號登入</button>
             </div>
           </div>
@@ -292,8 +307,6 @@
       };
 
       const stageLabel = PAYMENT_STAGES.find(s => s.k === selectedStage)?.l || selectedStage;
-
-      // 判斷是否為「最高管理員 (jingchuantw@gmail.com)」
       const isSuperAdmin = user.email.toLowerCase() === FIXED_ADMIN.toLowerCase();
 
       return (
@@ -307,7 +320,6 @@
               </div>
             </div>
             <div className="flex items-center gap-3">
-              {/* 修改：僅當身分為 SUPER ADMIN 時才顯示授權名單管理按鈕 */}
               {isSuperAdmin && (
                 <button onClick={() => setShowUserPanel(!showUserPanel)} className={`flex items-center gap-1 px-3 py-2 rounded-xl text-sm font-bold transition-all ${showUserPanel ? 'bg-orange-100 text-orange-600' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
                   <Users size={18} /> {showUserPanel ? '關閉人員管理' : '授權名單管理'}
@@ -323,7 +335,6 @@
             </div>
           </div>
 
-          {/* 修改：僅當身分為 SUPER ADMIN 且開啟面板時才顯示 */}
           {isSuperAdmin && showUserPanel && (
             <div className="bg-white p-6 rounded-2xl shadow-md border-2 border-orange-100 mb-6 animate-in slide-in-from-top-4 duration-300">
               <div className="flex items-center gap-2 mb-4 text-orange-600">
@@ -333,7 +344,7 @@
               <div className="flex flex-col md:flex-row gap-3 mb-6">
                 <input 
                   type="text" 
-                  placeholder="同仁名稱 (例如：阿尼)" 
+                  placeholder="同仁名稱" 
                   value={newNameInput}
                   onChange={(e) => setNewNameInput(e.target.value)}
                   className="flex-1 px-4 py-2 border rounded-xl outline-none focus:ring-2 focus:ring-orange-200"
