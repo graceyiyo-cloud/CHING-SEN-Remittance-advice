@@ -34,7 +34,7 @@
   <script type="text/babel" data-type="module">
     import React, { useState, useEffect, useMemo } from 'react';
     import { createRoot } from 'react-dom/client';
-    import { CheckCircle, XCircle, Edit3, Lock, LogIn, LogOut, Trash2, AlertCircle, ShieldCheck, Loader2, Database } from 'lucide-react';
+    import { CheckCircle, XCircle, Edit3, Lock, LogIn, LogOut, Trash2, AlertCircle, ShieldCheck, Loader2, Database, Users, Plus, X } from 'lucide-react';
     import { initializeApp, getApps } from 'firebase/app';
     import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
     import { getFirestore, doc, setDoc, onSnapshot, collection, updateDoc, arrayUnion, getDoc } from 'firebase/firestore';
@@ -71,7 +71,7 @@
       const [isAuthLoading, setIsAuthLoading] = useState(true);
       const [isReady, setIsReady] = useState(false);
       const [dbError, setDbError] = useState('');
-      const [cloudAuthorizedEmails, setCloudAuthorizedEmails] = useState([]); // 儲存從雲端抓到的授權名單
+      const [cloudAuthorizedEmails, setCloudAuthorizedEmails] = useState([]); 
 
       // 權限判斷：Email 必須是固定管理員，或是存在於雲端授權名單中
       const isAdmin = useMemo(() => {
@@ -85,28 +85,25 @@
           setUser(u);
           if (!u) {
             setIsAuthLoading(false);
+            setCloudAuthorizedEmails([]);
           }
         });
         return () => unsubscribeAuth();
       }, []);
 
-      // 【重要修復】登入後去抓取青森苑系統的授權名單
+      // 抓取青森苑系統的授權名單
       useEffect(() => {
         if (!user) return;
-
-        // 監聽授權名單 (路徑與主系統一致)
         const unsubAuthList = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'authorized_emails'), (s) => {
           if (s.exists()) {
             const list = s.data().emails || [];
-            // 轉為小寫存儲以便比對
             setCloudAuthorizedEmails(list.map(e => e.toLowerCase()));
           }
-          setIsAuthLoading(false); // 抓完名單後才結束載入狀態
+          setIsAuthLoading(false);
         }, (err) => {
           console.error("無法讀取授權名單:", err);
           setIsAuthLoading(false);
         });
-
         return () => unsubAuthList();
       }, [user]);
 
@@ -126,7 +123,6 @@
         const unsubAdditions = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'custom', 'additions'), (s) => setReconciledRems(s.data()?.remittances || []), handleError);
         const unsubPending = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'custom', 'pending_remittances'), (s) => setPendingRems(s.data()?.remittances || []), handleError);
         const unsubInv = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'invoices', 'all_invoices'), (s) => setInvoices(s.data() || {}), handleError);
-        
         const unsubMaster = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'master_sheets'), (snap) => {
           const units = {};
           snap.forEach(docSnap => {
@@ -171,7 +167,7 @@
           <div className="min-h-screen flex items-center justify-center bg-[#F9F8F6] p-4">
             <div className="bg-white p-10 rounded-3xl shadow-xl w-full max-w-md text-center space-y-8 border border-gray-100">
               <div className="flex justify-center"><div className="bg-[#8BA39E] p-5 rounded-2xl text-white shadow-lg"><Lock size={40} /></div></div>
-              <div><h1 className="text-2xl font-bold text-gray-800">內部對帳管理系統</h1><p className="text-gray-400 text-sm mt-2 font-medium tracking-wide">請登入您的 Google 帳號以存取後台</p></div>
+              <div><h1 className="text-2xl font-bold text-gray-800">內部對帳管理中心</h1><p className="text-gray-400 text-sm mt-2 font-medium tracking-wide">請登入您的 Google 帳號以存取後台</p></div>
               <button onClick={handleGoogleLogin} className="w-full flex items-center justify-center gap-3 bg-white border border-gray-200 py-4 rounded-xl font-bold text-gray-600 hover:bg-gray-50 transition-all shadow-sm active:scale-95 border-b-4 border-b-gray-100"><img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5"/> 使用 Google 帳號登入</button>
             </div>
           </div>
@@ -192,7 +188,7 @@
       }
 
       if (!isReady) {
-        return <div className="min-h-screen flex flex-col items-center justify-center bg-[#F9F8F6]"><div className="animate-spin rounded-full h-10 w-10 border-b-4 border-[#8BA39E] mb-4"></div><p className="text-[#8BA39E] font-bold">正在同步資料庫...</p></div>;
+        return <div className="min-h-screen flex flex-col items-center justify-center bg-[#F9F8F6]"><div className="animate-spin rounded-full h-10 w-10 border-b-4 border-[#8BA39E] mb-4"></div><p className="text-[#8BA39E] font-bold">正在同步雲端資料庫...</p></div>;
       }
 
       return <AdminDashboard 
@@ -201,12 +197,15 @@
         reconciledRems={reconciledRems} 
         invoices={invoices} 
         masterUnits={masterUnits} 
+        cloudAuthorizedEmails={cloudAuthorizedEmails}
         handleLogout={() => signOut(auth)} 
       />;
     }
 
-    function AdminDashboard({ user, pendingRems, reconciledRems, invoices, masterUnits, handleLogout }) {
+    function AdminDashboard({ user, pendingRems, reconciledRems, invoices, masterUnits, cloudAuthorizedEmails, handleLogout }) {
       const [selectedStage, setSelectedStage] = useState('使照');
+      const [showUserPanel, setShowUserPanel] = useState(false);
+      const [newEmailInput, setNewEmailInput] = useState('');
 
       const combinedRemittances = useMemo(() => {
         const p = pendingRems.map(r => ({ ...r, _isRec: false }));
@@ -216,19 +215,14 @@
 
       const updateInvoiceData = async (remittanceId, field, value) => {
         const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'invoices', 'all_invoices');
-        try {
-          await setDoc(docRef, { [remittanceId]: { [field]: value } }, { merge: true });
-        } catch (e) {
-          console.error("發票更新失敗:", e);
-        }
+        try { await setDoc(docRef, { [remittanceId]: { [field]: value } }, { merge: true }); } 
+        catch (e) { console.error(e); }
       };
 
       const handleToggleReconcile = async (rem, checked) => {
         const addRef = doc(db, 'artifacts', appId, 'public', 'data', 'custom', 'additions');
         const penRef = doc(db, 'artifacts', appId, 'public', 'data', 'custom', 'pending_remittances');
-        const cleanRem = { ...rem };
-        delete cleanRem._isRec;
-
+        const cleanRem = { ...rem }; delete cleanRem._isRec;
         try {
           await updateInvoiceData(rem.id, '已對帳', checked);
           if (checked) {
@@ -240,36 +234,58 @@
             await setDoc(addRef, { remittances: newReconciled }, { merge: true });
             await setDoc(penRef, { remittances: arrayUnion(cleanRem) }, { merge: true });
           }
-        } catch (e) {
-          alert("狀態同步失敗，請確認 Firebase 資料庫 Rules 設定。");
-        }
+        } catch (e) { alert("同步失敗，請檢查資料庫 Rules 設定。"); }
       };
 
       const handleDeleteRemittance = async (rem) => {
-        if (!window.confirm("確定要刪除這筆紀錄嗎？(警告：這會從資料庫永久移除)")) return;
+        if (!window.confirm("確定要刪除這筆紀錄嗎？")) return;
         try {
           const path = rem._isRec ? 'additions' : 'pending_remittances';
           const list = rem._isRec ? reconciledRems : pendingRems;
           const ref = doc(db, 'artifacts', appId, 'public', 'data', 'custom', path);
           await setDoc(ref, { remittances: list.filter(r => r.id !== rem.id) }, { merge: true });
-        } catch (e) {
-          alert("刪除失敗");
-        }
+        } catch (e) { alert("刪除失敗"); }
+      };
+
+      // 授權名單管理邏輯
+      const handleAddEmail = async () => {
+        const email = newEmailInput.trim().toLowerCase();
+        if (!email || !email.includes('@')) { alert("請輸入正確的 Email"); return; }
+        if (cloudAuthorizedEmails.includes(email) || email === FIXED_ADMIN.toLowerCase()) { alert("該 Email 已在授權名單中"); return; }
+        
+        try {
+          const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'authorized_emails');
+          await setDoc(docRef, { emails: arrayUnion(email) }, { merge: true });
+          setNewEmailInput('');
+        } catch (e) { alert("新增失敗，權限可能不足。"); }
+      };
+
+      const handleRemoveEmail = async (email) => {
+        if (!window.confirm(`確定要移除 ${email} 的授權嗎？`)) return;
+        try {
+          const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'authorized_emails');
+          const newList = cloudAuthorizedEmails.filter(e => e !== email);
+          await setDoc(docRef, { emails: newList }, { merge: true });
+        } catch (e) { alert("移除失敗"); }
       };
 
       const stageLabel = PAYMENT_STAGES.find(s => s.k === selectedStage)?.l || selectedStage;
 
       return (
         <div className="py-6 px-4 sm:px-6 lg:px-8 font-sans max-w-7xl mx-auto">
+          {/* 管理員介面頂部 */}
           <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
             <div className="flex items-center gap-4">
               <div className="bg-green-50 p-2 rounded-lg text-green-600 shadow-inner"><ShieldCheck size={24}/></div>
               <div>
                 <h1 className="text-lg font-bold text-gray-800">內部對帳管理中心</h1>
-                <p className="text-xs text-gray-400 font-medium">管理者：{user.email}</p>
+                <p className="text-xs text-gray-400 font-medium">{user.email} (管理者模式)</p>
               </div>
             </div>
             <div className="flex items-center gap-3">
+              <button onClick={() => setShowUserPanel(!showUserPanel)} className={`flex items-center gap-1 px-3 py-2 rounded-xl text-sm font-bold transition-all ${showUserPanel ? 'bg-orange-100 text-orange-600' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
+                <Users size={18} /> {showUserPanel ? '關閉人員管理' : '授權名單管理'}
+              </button>
               <div className="bg-gray-50 px-4 py-2 rounded-xl border border-gray-100 flex items-center gap-2">
                 <span className="text-sm font-bold text-gray-500">期款比對：</span>
                 <select value={selectedStage} onChange={(e) => setSelectedStage(e.target.value)} className="bg-transparent text-sm font-bold text-gray-700 outline-none cursor-pointer">
@@ -280,6 +296,43 @@
             </div>
           </div>
 
+          {/* 授權人員管理面板 (點擊後展開) */}
+          {showUserPanel && (
+            <div className="bg-white p-6 rounded-2xl shadow-md border-2 border-orange-100 mb-6 animate-in slide-in-from-top-4 duration-300">
+              <div className="flex items-center gap-2 mb-4 text-orange-600">
+                <Users size={20} />
+                <h2 className="font-bold">授權名單管理 (同步青森苑系統)</h2>
+              </div>
+              <div className="flex gap-2 mb-6">
+                <input 
+                  type="email" 
+                  placeholder="輸入 Google 帳號 Email" 
+                  value={newEmailInput}
+                  onChange={(e) => setNewEmailInput(e.target.value)}
+                  className="flex-1 px-4 py-2 border rounded-xl outline-none focus:ring-2 focus:ring-orange-200"
+                />
+                <button onClick={handleAddEmail} className="bg-orange-500 text-white px-6 py-2 rounded-xl font-bold hover:bg-orange-600 flex items-center gap-1">
+                  <Plus size={18}/> 加入授權
+                </button>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                <div className="p-3 bg-gray-50 rounded-xl border flex justify-between items-center opacity-60">
+                  <span className="text-sm font-medium">{FIXED_ADMIN}</span>
+                  <span className="text-[10px] bg-gray-200 px-1.5 py-0.5 rounded font-bold">系統預設</span>
+                </div>
+                {cloudAuthorizedEmails.map(email => (
+                  <div key={email} className="p-3 bg-orange-50/30 rounded-xl border border-orange-100 flex justify-between items-center group">
+                    <span className="text-sm font-medium text-gray-700">{email}</span>
+                    <button onClick={() => handleRemoveEmail(email)} className="text-red-300 hover:text-red-500 transition-colors">
+                      <X size={16} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* 資料表格 */}
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse whitespace-nowrap">
