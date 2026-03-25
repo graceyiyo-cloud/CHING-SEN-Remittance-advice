@@ -178,7 +178,7 @@
           <div className="min-h-screen flex items-center justify-center bg-[#F9F8F6] p-4">
             <div className="bg-white p-10 rounded-3xl shadow-xl w-full max-w-md text-center space-y-8 border border-gray-100">
               <div className="flex justify-center"><div className="bg-[#8BA39E] p-5 rounded-2xl text-white shadow-lg"><Lock size={40} /></div></div>
-              <div><h1 className="text-2xl font-bold text-gray-800">內部對帳管理系統</h1><p className="text-gray-400 text-sm mt-2 font-medium tracking-wide">請登入您的 Google 帳號以存取後台</p></div>
+              <div><h1 className="text-2xl font-bold text-gray-800">內部對帳管理中心</h1><p className="text-gray-400 text-sm mt-2 font-medium tracking-wide">請登入您的 Google 帳號以存取後台</p></div>
               <button onClick={handleGoogleLogin} className="w-full flex items-center justify-center gap-3 bg-white border border-gray-200 py-4 rounded-xl font-bold text-gray-600 hover:bg-gray-50 transition-all shadow-sm active:scale-95 border-b-4 border-b-gray-100"><img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5"/> 使用 Google 帳號登入</button>
             </div>
           </div>
@@ -293,6 +293,9 @@
 
       const stageLabel = PAYMENT_STAGES.find(s => s.k === selectedStage)?.l || selectedStage;
 
+      // 判斷是否為「最高管理員 (jingchuantw@gmail.com)」
+      const isSuperAdmin = user.email.toLowerCase() === FIXED_ADMIN.toLowerCase();
+
       return (
         <div className="py-6 px-4 sm:px-6 lg:px-8 font-sans max-w-7xl mx-auto">
           <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
@@ -300,13 +303,16 @@
               <div className="bg-green-50 p-2 rounded-lg text-green-600 shadow-inner"><ShieldCheck size={24}/></div>
               <div>
                 <h1 className="text-lg font-bold text-gray-800">內部對帳管理中心</h1>
-                <p className="text-xs text-gray-400 font-medium">{user.email} (管理者模式)</p>
+                <p className="text-xs text-gray-400 font-medium">{user.email} ({isSuperAdmin ? '最高管理員' : '獲授權人員'})</p>
               </div>
             </div>
             <div className="flex items-center gap-3">
-              <button onClick={() => setShowUserPanel(!showUserPanel)} className={`flex items-center gap-1 px-3 py-2 rounded-xl text-sm font-bold transition-all ${showUserPanel ? 'bg-orange-100 text-orange-600' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
-                <Users size={18} /> {showUserPanel ? '關閉人員管理' : '授權名單管理'}
-              </button>
+              {/* 修改：僅當身分為 SUPER ADMIN 時才顯示授權名單管理按鈕 */}
+              {isSuperAdmin && (
+                <button onClick={() => setShowUserPanel(!showUserPanel)} className={`flex items-center gap-1 px-3 py-2 rounded-xl text-sm font-bold transition-all ${showUserPanel ? 'bg-orange-100 text-orange-600' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}>
+                  <Users size={18} /> {showUserPanel ? '關閉人員管理' : '授權名單管理'}
+                </button>
+              )}
               <div className="bg-gray-50 px-4 py-2 rounded-xl border border-gray-100 flex items-center gap-2">
                 <span className="text-sm font-bold text-gray-500">期款比對：</span>
                 <select value={selectedStage} onChange={(e) => setSelectedStage(e.target.value)} className="bg-transparent text-sm font-bold text-gray-700 outline-none cursor-pointer">
@@ -317,7 +323,8 @@
             </div>
           </div>
 
-          {showUserPanel && (
+          {/* 修改：僅當身分為 SUPER ADMIN 且開啟面板時才顯示 */}
+          {isSuperAdmin && showUserPanel && (
             <div className="bg-white p-6 rounded-2xl shadow-md border-2 border-orange-100 mb-6 animate-in slide-in-from-top-4 duration-300">
               <div className="flex items-center gap-2 mb-4 text-orange-600">
                 <Users size={20} />
@@ -374,7 +381,7 @@
                     <th className="p-5">戶別 / 買方</th>
                     <th className="p-5">匯款資訊 (民國年)</th>
                     <th className="p-5">金額比對 ({stageLabel})</th>
-                    <th className="p-5 text-sky-700">發票日期 (民國年對照)</th>
+                    <th className="p-5 text-sky-700">發票日期 (民國年)</th>
                     <th className="p-5 text-sky-700">發票號碼</th>
                     <th className="p-5 text-center">管理</th>
                   </tr>
@@ -428,19 +435,13 @@
                           <div className="text-[10px] text-gray-400 font-medium">應收目標: ${exp.toLocaleString()}</div>
                         </td>
                         <td className="p-5">
-                          <div className="flex flex-col gap-1">
-                            <input 
-                              type="date" 
-                              value={(invData['發票日期'] || '').replace(/\//g, '-')} 
-                              onChange={(e) => updateInvoiceData(sub.id, '發票日期', e.target.value.replace(/-/g, '/'))} 
-                              className="px-3 py-1.5 border border-gray-100 rounded-lg text-xs outline-none focus:ring-2 focus:ring-sky-100 focus:border-sky-300 bg-white" 
-                            />
-                            {invData['發票日期'] && (
-                              <div className="text-[10px] text-sky-600 font-bold ml-1">
-                                民國 {toROC(invData['發票日期'])}
-                              </div>
-                            )}
-                          </div>
+                          <input 
+                            type="text" 
+                            placeholder="例：115/03/25"
+                            value={toROC(invData['發票日期'])} 
+                            onChange={(e) => updateInvoiceData(sub.id, '發票日期', e.target.value)} 
+                            className="px-3 py-1.5 border border-gray-100 rounded-lg text-xs outline-none focus:ring-2 focus:ring-sky-100 focus:border-sky-300 bg-white w-32" 
+                          />
                         </td>
                         <td className="p-5">
                           <div className="flex items-center gap-1">
