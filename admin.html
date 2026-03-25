@@ -34,7 +34,7 @@
   <script type="text/babel" data-type="module">
     import React, { useState, useEffect, useMemo } from 'react';
     import { createRoot } from 'react-dom/client';
-    import { CheckCircle, XCircle, Edit3, Lock, LogIn, LogOut, Trash2, AlertCircle, ShieldCheck, Loader2, Database, Users, Plus, X, User } from 'lucide-react';
+    import { CheckCircle, XCircle, Edit3, Lock, LogIn, LogOut, Trash2, AlertCircle, ShieldCheck, Loader2, Database, Users, Plus, X, User, MessageSquare } from 'lucide-react';
     import { initializeApp, getApps } from 'firebase/app';
     import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
     import { getFirestore, doc, setDoc, onSnapshot, collection, updateDoc, arrayUnion, getDoc } from 'firebase/firestore';
@@ -71,9 +71,8 @@
       const [isAuthLoading, setIsAuthLoading] = useState(true);
       const [isReady, setIsReady] = useState(false);
       const [dbError, setDbError] = useState('');
-      const [cloudAuthorizedUsers, setCloudAuthorizedUsers] = useState([]); // 儲存包含名稱的授權對象
+      const [cloudAuthorizedUsers, setCloudAuthorizedUsers] = useState([]); 
 
-      // 權限判斷：Email 必須是固定管理員，或是存在於雲端授權名單中
       const isAdmin = useMemo(() => {
         if (!user) return false;
         const email = user.email.toLowerCase();
@@ -91,13 +90,11 @@
         return () => unsubscribeAuth();
       }, []);
 
-      // 抓取青森苑系統的授權名單 (包含名稱與 Email 的物件陣列)
       useEffect(() => {
         if (!user) return;
         const unsubAuthList = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'authorized_emails'), (s) => {
           if (s.exists()) {
             const data = s.data();
-            // 相容舊格式 (純字串陣列) 或 新格式 (物件陣列)
             const list = data.users || (data.emails || []).map(e => ({ email: e, name: '未命名同仁' }));
             setCloudAuthorizedUsers(list);
           }
@@ -251,7 +248,6 @@
         } catch (e) { alert("刪除失敗"); }
       };
 
-      // 授權名單管理邏輯
       const handleAddUser = async () => {
         const email = newEmailInput.trim().toLowerCase();
         const name = newNameInput.trim();
@@ -265,7 +261,6 @@
           const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'authorized_emails');
           await setDoc(docRef, { 
               users: arrayUnion({ email, name }),
-              // 同步維護舊的 emails 欄位以相容可能存在的舊代碼
               emails: arrayUnion(email)
           }, { merge: true });
           setNewNameInput('');
@@ -289,7 +284,6 @@
 
       return (
         <div className="py-6 px-4 sm:px-6 lg:px-8 font-sans max-w-7xl mx-auto">
-          {/* 管理員介面頂部 */}
           <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
             <div className="flex items-center gap-4">
               <div className="bg-green-50 p-2 rounded-lg text-green-600 shadow-inner"><ShieldCheck size={24}/></div>
@@ -312,7 +306,6 @@
             </div>
           </div>
 
-          {/* 授權人員管理面板 */}
           {showUserPanel && (
             <div className="bg-white p-6 rounded-2xl shadow-md border-2 border-orange-100 mb-6 animate-in slide-in-from-top-4 duration-300">
               <div className="flex items-center gap-2 mb-4 text-orange-600">
@@ -361,7 +354,6 @@
             </div>
           )}
 
-          {/* 資料表格 */}
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-left border-collapse whitespace-nowrap">
@@ -406,6 +398,13 @@
                           <div className="font-semibold">{sub.匯款日期}</div>
                           <div className="text-[10px] text-gray-400 font-mono mt-1">帳號: {sub.帳號後五碼 || '無資料'}</div>
                           <div className="text-[10px] text-gray-400">戶名: {sub.匯款帳戶戶名 || '-'}</div>
+                          {/* 修正：加入備註顯示 */}
+                          {sub.備註 && (
+                            <div className="mt-2 text-[10px] text-blue-600 bg-blue-50 px-2 py-1 rounded border border-blue-100 flex items-start gap-1 whitespace-normal max-w-[200px]">
+                              <MessageSquare size={10} className="mt-0.5 flex-shrink-0" />
+                              <span><b>備註:</b> {sub.備註}</span>
+                            </div>
+                          )}
                         </td>
                         <td className="p-5">
                           <div className="flex items-center gap-2 font-bold text-lg">
