@@ -34,7 +34,7 @@
   <script type="text/babel" data-type="module">
     import React, { useState, useEffect, useMemo } from 'react';
     import { createRoot } from 'react-dom/client';
-    import { CheckCircle, XCircle, Edit3, Lock, LogIn, LogOut, Trash2, AlertCircle, ShieldCheck, Loader2, Database, Users, Plus, X } from 'lucide-react';
+    import { CheckCircle, XCircle, Edit3, Lock, LogIn, LogOut, Trash2, AlertCircle, ShieldCheck, Loader2, Database, Users, Plus, X, User } from 'lucide-react';
     import { initializeApp, getApps } from 'firebase/app';
     import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
     import { getFirestore, doc, setDoc, onSnapshot, collection, updateDoc, arrayUnion, getDoc } from 'firebase/firestore';
@@ -71,33 +71,35 @@
       const [isAuthLoading, setIsAuthLoading] = useState(true);
       const [isReady, setIsReady] = useState(false);
       const [dbError, setDbError] = useState('');
-      const [cloudAuthorizedEmails, setCloudAuthorizedEmails] = useState([]); 
+      const [cloudAuthorizedUsers, setCloudAuthorizedUsers] = useState([]); // 儲存包含名稱的授權對象
 
       // 權限判斷：Email 必須是固定管理員，或是存在於雲端授權名單中
       const isAdmin = useMemo(() => {
         if (!user) return false;
         const email = user.email.toLowerCase();
-        return email === FIXED_ADMIN.toLowerCase() || cloudAuthorizedEmails.includes(email);
-      }, [user, cloudAuthorizedEmails]);
+        return email === FIXED_ADMIN.toLowerCase() || cloudAuthorizedUsers.some(u => u.email.toLowerCase() === email);
+      }, [user, cloudAuthorizedUsers]);
 
       useEffect(() => {
         const unsubscribeAuth = onAuthStateChanged(auth, (u) => {
           setUser(u);
           if (!u) {
             setIsAuthLoading(false);
-            setCloudAuthorizedEmails([]);
+            setCloudAuthorizedUsers([]);
           }
         });
         return () => unsubscribeAuth();
       }, []);
 
-      // 抓取青森苑系統的授權名單
+      // 抓取青森苑系統的授權名單 (包含名稱與 Email 的物件陣列)
       useEffect(() => {
         if (!user) return;
         const unsubAuthList = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'authorized_emails'), (s) => {
           if (s.exists()) {
-            const list = s.data().emails || [];
-            setCloudAuthorizedEmails(list.map(e => e.toLowerCase()));
+            const data = s.data();
+            // 相容舊格式 (純字串陣列) 或 新格式 (物件陣列)
+            const list = data.users || (data.emails || []).map(e => ({ email: e, name: '未命名同仁' }));
+            setCloudAuthorizedUsers(list);
           }
           setIsAuthLoading(false);
         }, (err) => {
@@ -123,6 +125,7 @@
         const unsubAdditions = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'custom', 'additions'), (s) => setReconciledRems(s.data()?.remittances || []), handleError);
         const unsubPending = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'custom', 'pending_remittances'), (s) => setPendingRems(s.data()?.remittances || []), handleError);
         const unsubInv = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'invoices', 'all_invoices'), (s) => setInvoices(s.data() || {}), handleError);
+        
         const unsubMaster = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'master_sheets'), (snap) => {
           const units = {};
           snap.forEach(docSnap => {
@@ -167,7 +170,7 @@
           <div className="min-h-screen flex items-center justify-center bg-[#F9F8F6] p-4">
             <div className="bg-white p-10 rounded-3xl shadow-xl w-full max-w-md text-center space-y-8 border border-gray-100">
               <div className="flex justify-center"><div className="bg-[#8BA39E] p-5 rounded-2xl text-white shadow-lg"><Lock size={40} /></div></div>
-              <div><h1 className="text-2xl font-bold text-gray-800">內部對帳管理中心</h1><p className="text-gray-400 text-sm mt-2 font-medium tracking-wide">請登入您的 Google 帳號以存取後台</p></div>
+              <div><h1 className="text-2xl font-bold text-gray-800">內部對帳管理系統</h1><p className="text-gray-400 text-sm mt-2 font-medium tracking-wide">請登入您的 Google 帳號以存取後台</p></div>
               <button onClick={handleGoogleLogin} className="w-full flex items-center justify-center gap-3 bg-white border border-gray-200 py-4 rounded-xl font-bold text-gray-600 hover:bg-gray-50 transition-all shadow-sm active:scale-95 border-b-4 border-b-gray-100"><img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5"/> 使用 Google 帳號登入</button>
             </div>
           </div>
@@ -197,14 +200,15 @@
         reconciledRems={reconciledRems} 
         invoices={invoices} 
         masterUnits={masterUnits} 
-        cloudAuthorizedEmails={cloudAuthorizedEmails}
+        cloudAuthorizedUsers={cloudAuthorizedUsers}
         handleLogout={() => signOut(auth)} 
       />;
     }
 
-    function AdminDashboard({ user, pendingRems, reconciledRems, invoices, masterUnits, cloudAuthorizedEmails, handleLogout }) {
+    function AdminDashboard({ user, pendingRems, reconciledRems, invoices, masterUnits, cloudAuthorizedUsers, handleLogout }) {
       const [selectedStage, setSelectedStage] = useState('使照');
       const [showUserPanel, setShowUserPanel] = useState(false);
+      const [newNameInput, setNewNameInput] = useState('');
       const [newEmailInput, setNewEmailInput] = useState('');
 
       const combinedRemittances = useMemo(() => {
@@ -248,24 +252,36 @@
       };
 
       // 授權名單管理邏輯
-      const handleAddEmail = async () => {
+      const handleAddUser = async () => {
         const email = newEmailInput.trim().toLowerCase();
+        const name = newNameInput.trim();
+        if (!name) { alert("請輸入同仁名稱"); return; }
         if (!email || !email.includes('@')) { alert("請輸入正確的 Email"); return; }
-        if (cloudAuthorizedEmails.includes(email) || email === FIXED_ADMIN.toLowerCase()) { alert("該 Email 已在授權名單中"); return; }
+        if (cloudAuthorizedUsers.some(u => u.email.toLowerCase() === email) || email === FIXED_ADMIN.toLowerCase()) { 
+            alert("該帳號已在授權名單中"); return; 
+        }
         
         try {
           const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'authorized_emails');
-          await setDoc(docRef, { emails: arrayUnion(email) }, { merge: true });
+          await setDoc(docRef, { 
+              users: arrayUnion({ email, name }),
+              // 同步維護舊的 emails 欄位以相容可能存在的舊代碼
+              emails: arrayUnion(email)
+          }, { merge: true });
+          setNewNameInput('');
           setNewEmailInput('');
         } catch (e) { alert("新增失敗，權限可能不足。"); }
       };
 
-      const handleRemoveEmail = async (email) => {
-        if (!window.confirm(`確定要移除 ${email} 的授權嗎？`)) return;
+      const handleRemoveUser = async (targetUser) => {
+        if (!window.confirm(`確定要移除 ${targetUser.name} (${targetUser.email}) 的授權嗎？`)) return;
         try {
           const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'authorized_emails');
-          const newList = cloudAuthorizedEmails.filter(e => e !== email);
-          await setDoc(docRef, { emails: newList }, { merge: true });
+          const newList = cloudAuthorizedUsers.filter(u => u.email.toLowerCase() !== targetUser.email.toLowerCase());
+          await setDoc(docRef, { 
+              users: newList,
+              emails: newList.map(u => u.email)
+          }, { merge: true });
         } catch (e) { alert("移除失敗"); }
       };
 
@@ -296,35 +312,48 @@
             </div>
           </div>
 
-          {/* 授權人員管理面板 (點擊後展開) */}
+          {/* 授權人員管理面板 */}
           {showUserPanel && (
             <div className="bg-white p-6 rounded-2xl shadow-md border-2 border-orange-100 mb-6 animate-in slide-in-from-top-4 duration-300">
               <div className="flex items-center gap-2 mb-4 text-orange-600">
                 <Users size={20} />
-                <h2 className="font-bold">授權名單管理 (同步青森苑系統)</h2>
+                <h2 className="font-bold">授權名單管理</h2>
               </div>
-              <div className="flex gap-2 mb-6">
+              <div className="flex flex-col md:flex-row gap-3 mb-6">
                 <input 
-                  type="email" 
-                  placeholder="輸入 Google 帳號 Email" 
-                  value={newEmailInput}
-                  onChange={(e) => setNewEmailInput(e.target.value)}
+                  type="text" 
+                  placeholder="同仁名稱 (例如：阿尼)" 
+                  value={newNameInput}
+                  onChange={(e) => setNewNameInput(e.target.value)}
                   className="flex-1 px-4 py-2 border rounded-xl outline-none focus:ring-2 focus:ring-orange-200"
                 />
-                <button onClick={handleAddEmail} className="bg-orange-500 text-white px-6 py-2 rounded-xl font-bold hover:bg-orange-600 flex items-center gap-1">
+                <input 
+                  type="email" 
+                  placeholder="Google 帳號 Email" 
+                  value={newEmailInput}
+                  onChange={(e) => setNewEmailInput(e.target.value)}
+                  className="flex-[1.5] px-4 py-2 border rounded-xl outline-none focus:ring-2 focus:ring-orange-200"
+                />
+                <button onClick={handleAddUser} className="bg-orange-500 text-white px-8 py-2 rounded-xl font-bold hover:bg-orange-600 flex items-center justify-center gap-1">
                   <Plus size={18}/> 加入授權
                 </button>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
                 <div className="p-3 bg-gray-50 rounded-xl border flex justify-between items-center opacity-60">
-                  <span className="text-sm font-medium">{FIXED_ADMIN}</span>
+                  <div className="flex flex-col">
+                    <span className="text-xs font-bold text-gray-400 uppercase">管理員</span>
+                    <span className="text-sm font-medium">{FIXED_ADMIN}</span>
+                  </div>
                   <span className="text-[10px] bg-gray-200 px-1.5 py-0.5 rounded font-bold">系統預設</span>
                 </div>
-                {cloudAuthorizedEmails.map(email => (
-                  <div key={email} className="p-3 bg-orange-50/30 rounded-xl border border-orange-100 flex justify-between items-center group">
-                    <span className="text-sm font-medium text-gray-700">{email}</span>
-                    <button onClick={() => handleRemoveEmail(email)} className="text-red-300 hover:text-red-500 transition-colors">
-                      <X size={16} />
+                {cloudAuthorizedUsers.map(u => (
+                  <div key={u.email} className="p-3 bg-orange-50/30 rounded-xl border border-orange-100 flex justify-between items-center group">
+                    <div className="flex flex-col overflow-hidden">
+                      <span className="text-xs font-bold text-orange-400">{u.name}</span>
+                      <span className="text-sm font-medium text-gray-700 truncate">{u.email}</span>
+                    </div>
+                    <button onClick={() => handleRemoveUser(u)} className="text-red-300 hover:text-red-500 transition-colors ml-2">
+                      <X size={18} />
                     </button>
                   </div>
                 ))}
@@ -347,7 +376,7 @@
                     <th className="p-5 text-center">管理</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-50 text-sm">
+                <tbody className="divide-y divide-gray-50 text-sm text-gray-700">
                   {combinedRemittances.map((sub) => {
                     const master = masterUnits[sub.unitKey];
                     const exp = master?.stages?.[selectedStage] || 0;
@@ -364,7 +393,7 @@
                               onChange={(e) => handleToggleReconcile(sub, e.target.checked)} 
                               className="w-5 h-5 text-[#8BA39E] rounded-md border-gray-300 focus:ring-0 cursor-pointer" 
                             />
-                            <span className={`font-bold ${isRec ? 'text-green-600' : 'text-gray-400'}`}>
+                            <span className={`font-bold transition-colors ${isRec ? 'text-green-600' : 'text-gray-400'}`}>
                                 {isRec ? '已對帳' : '待處理'}
                             </span>
                           </label>
