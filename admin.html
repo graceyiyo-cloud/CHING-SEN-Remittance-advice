@@ -66,6 +66,17 @@
       { k: '交屋', l: '交屋款' }
     ];
 
+    // 民國年轉換工具函數
+    const toROC = (dateStr) => {
+      if (!dateStr) return '';
+      const parts = dateStr.replace(/-/g, '/').split('/');
+      if (parts.length < 3) return dateStr;
+      let y = parseInt(parts[0]);
+      if (isNaN(y)) return dateStr;
+      if (y > 1911) y -= 1911; // 轉換為民國年
+      return `${y}/${parts[1]}/${parts[2]}`;
+    };
+
     function App() {
       const [user, setUser] = useState(null);
       const [isAuthLoading, setIsAuthLoading] = useState(true);
@@ -361,9 +372,9 @@
                   <tr className="bg-[#F8F7F3] text-gray-500 text-xs uppercase tracking-wider font-bold">
                     <th className="p-5">對帳</th>
                     <th className="p-5">戶別 / 買方</th>
-                    <th className="p-5">匯款資訊</th>
+                    <th className="p-5">匯款資訊 (民國年)</th>
                     <th className="p-5">金額比對 ({stageLabel})</th>
-                    <th className="p-5 text-sky-700">發票日期</th>
+                    <th className="p-5 text-sky-700">發票日期 (民國年對照)</th>
                     <th className="p-5 text-sky-700">發票號碼</th>
                     <th className="p-5 text-center">管理</th>
                   </tr>
@@ -395,10 +406,9 @@
                           <div className="text-xs text-[#8BA39E] font-medium">{master ? master.buyer : '未識別'}</div>
                         </td>
                         <td className="p-5">
-                          <div className="font-semibold">{sub.匯款日期}</div>
+                          <div className="font-semibold">{toROC(sub.匯款日期)}</div>
                           <div className="text-[10px] text-gray-400 font-mono mt-1">帳號: {sub.帳號後五碼 || '無資料'}</div>
                           <div className="text-[10px] text-gray-400">戶名: {sub.匯款帳戶戶名 || '-'}</div>
-                          {/* 修正：加入備註顯示 */}
                           {sub.備註 && (
                             <div className="mt-2 text-[10px] text-blue-600 bg-blue-50 px-2 py-1 rounded border border-blue-100 flex items-start gap-1 whitespace-normal max-w-[200px]">
                               <MessageSquare size={10} className="mt-0.5 flex-shrink-0" />
@@ -418,12 +428,19 @@
                           <div className="text-[10px] text-gray-400 font-medium">應收目標: ${exp.toLocaleString()}</div>
                         </td>
                         <td className="p-5">
-                          <input 
-                            type="date" 
-                            value={(invData['發票日期'] || '').replace(/\//g, '-')} 
-                            onChange={(e) => updateInvoiceData(sub.id, '發票日期', e.target.value.replace(/-/g, '/'))} 
-                            className="px-3 py-1.5 border border-gray-100 rounded-lg text-xs outline-none bg-white" 
-                          />
+                          <div className="flex flex-col gap-1">
+                            <input 
+                              type="date" 
+                              value={(invData['發票日期'] || '').replace(/\//g, '-')} 
+                              onChange={(e) => updateInvoiceData(sub.id, '發票日期', e.target.value.replace(/-/g, '/'))} 
+                              className="px-3 py-1.5 border border-gray-100 rounded-lg text-xs outline-none focus:ring-2 focus:ring-sky-100 focus:border-sky-300 bg-white" 
+                            />
+                            {invData['發票日期'] && (
+                              <div className="text-[10px] text-sky-600 font-bold ml-1">
+                                民國 {toROC(invData['發票日期'])}
+                              </div>
+                            )}
+                          </div>
                         </td>
                         <td className="p-5">
                           <div className="flex items-center gap-1">
