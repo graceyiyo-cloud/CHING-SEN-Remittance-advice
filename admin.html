@@ -23,6 +23,7 @@
 </head>
 <body class="bg-[#F9F8F6]">
   <div id="root">
+    <!-- 靜態載入提示 -->
     <div id="initial-loading" class="min-h-screen flex items-center justify-center">
       <div class="text-center">
         <div class="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-[#8BA39E]"></div>
@@ -84,11 +85,20 @@
       const [dbError, setDbError] = useState('');
       const [cloudAuthorizedUsers, setCloudAuthorizedUsers] = useState([]); 
 
+      // 權限判斷
       const isAdmin = useMemo(() => {
         if (!user) return false;
         const email = user.email.toLowerCase();
         return email === FIXED_ADMIN.toLowerCase() || cloudAuthorizedUsers.some(u => u.email.toLowerCase() === email);
       }, [user, cloudAuthorizedUsers]);
+
+      // 安全機制：載入逾時處理
+      useEffect(() => {
+        const timer = setTimeout(() => {
+          if (isAuthLoading) setIsAuthLoading(false);
+        }, 8000);
+        return () => clearTimeout(timer);
+      }, [isAuthLoading]);
 
       useEffect(() => {
         const unsubscribeAuth = onAuthStateChanged(auth, (u) => {
@@ -101,6 +111,7 @@
         return () => unsubscribeAuth();
       }, []);
 
+      // 抓取授權名單
       useEffect(() => {
         if (!user) return;
         const unsubAuthList = onSnapshot(doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'authorized_emails'), (s) => {
@@ -126,6 +137,7 @@
         if (!user || !isAdmin) return;
         
         const handleError = (error) => {
+          console.error("Firebase Error:", error);
           setDbError(error.message);
           setIsReady(true);
         };
@@ -137,39 +149,36 @@
         const unsubMaster = onSnapshot(collection(db, 'artifacts', appId, 'public', 'data', 'master_sheets'), (snap) => {
           const units = {};
           snap.forEach(docSnap => {
-            // 【修復：精確篩選母檔】避免加總到暫存表或其他非收款總表的文件
-            if (!docSnap.id.includes('收款總表')) return;
+            const data = docSnap.data();
+            const isMaster = docSnap.id.includes('收款總表');
+            const isPrepay = docSnap.id.includes('預收款及車位');
+            if (!isMaster && !isPrepay) return;
 
-            docSnap.data().rows?.forEach(row => {
+            data.rows?.forEach(row => {
               let f = String(row['樓層'] || '').trim().replace(/\.0$/, '');
               let u = String(row['編號'] || '').trim().replace(/\.0$/, '');
               if (f && u && !f.includes('合計')) {
                 const key = `${f}_${u}`;
-                if (!units[key]) units[key] = { floor: f, unit: u, buyer: row['買方'] || row['姓名'] || '-', stages: {} };
-                
-                PAYMENT_STAGES.forEach(st => {
-                  let contractAmt = 0;
-                  let paidAmt = 0;
-                  let unpaidAmt = NaN;
-
-                  Object.keys(row).forEach(rk => {
-                    const val = parseFloat(String(row[rk] || '').replace(/,/g, ''));
-                    // 檢查欄位名稱是否包含該期款名稱 (例如: 使照)
-                    if (rk.includes(st.k)) {
-                       if (rk.includes('應收') || rk.includes('應付')) contractAmt += isNaN(val) ? 0 : val;
-                       if (rk.includes('已付') || rk.includes('實收')) paidAmt += isNaN(val) ? 0 : val;
-                       if (rk.includes('未付') || rk.includes('餘額')) {
-                          if (!isNaN(val)) unpaidAmt = val;
-                       }
-                    }
+                if (!units[key]) units[key] = { floor: f, unit: u, buyer: row['買方'] || row['姓名'] || '-', stages: {}, prepayAmt: 0 };
+                if (isMaster) {
+                  PAYMENT_STAGES.forEach(st => {
+                    let contractAmt = 0, paidAmt = 0, unpaidAmt = NaN;
+                    Object.keys(row).forEach(rk => {
+                      const val = parseFloat(String(row[rk] || '').replace(/,/g, ''));
+                      if (rk.includes(st.k)) {
+                         if (rk.includes('應收') || rk.includes('應付')) contractAmt += isNaN(val) ? 0 : val;
+                         if (rk.includes('已付') || rk.includes('實收')) paidAmt += isNaN(val) ? 0 : val;
+                         if (rk.includes('未付') || rk.includes('餘額')) { if (!isNaN(val)) unpaidAmt = val; }
+                      }
+                    });
+                    const finalStageUnpaid = !isNaN(unpaidAmt) ? unpaidAmt : (contractAmt - paidAmt);
+                    units[key].stages[st.k] = (units[key].stages[st.k] || 0) + finalStageUnpaid;
                   });
-
-                  // 優先使用 Excel 內的「未付/餘額」欄位，若無則計算 應收 - 已付
-                  const finalStageUnpaid = !isNaN(unpaidAmt) ? unpaidAmt : (contractAmt - paidAmt);
-                  
-                  // 同一戶別在不同 doc 可能有分開計算，這裡進行合併
-                  units[key].stages[st.k] = (units[key].stages[st.k] || 0) + finalStageUnpaid;
-                });
+                }
+                if (isPrepay) {
+                  const prepayVal = parseFloat(String(row['預收代書款'] || '0').replace(/,/g, '')) || 0;
+                  units[key].prepayAmt = prepayVal;
+                }
               }
             });
           });
@@ -181,11 +190,16 @@
       }, [user, isAdmin]);
 
       const handleGoogleLogin = async () => {
-        try { await signInWithPopup(auth, provider); } catch (e) { console.error("Login Error", e); }
+        try { await signInWithPopup(auth, provider); } catch (e) { alert("登入失敗: " + e.message); }
       };
 
       if (isAuthLoading) {
-        return <div className="min-h-screen flex items-center justify-center bg-[#F9F8F6]"><Loader2 className="animate-spin text-[#8BA39E]" size={32} /></div>;
+        return (
+          <div className="min-h-screen flex flex-col items-center justify-center bg-[#F9F8F6]">
+            <Loader2 className="animate-spin text-[#8BA39E] mb-4" size={40} />
+            <p className="text-gray-500 font-medium">正在建立安全連線...</p>
+          </div>
+        );
       }
 
       if (!user) {
@@ -193,7 +207,7 @@
           <div className="min-h-screen flex items-center justify-center bg-[#F9F8F6] p-4">
             <div className="bg-white p-10 rounded-3xl shadow-xl w-full max-w-md text-center space-y-8 border border-gray-100">
               <div className="flex justify-center"><div className="bg-[#8BA39E] p-5 rounded-2xl text-white shadow-lg"><Lock size={40} /></div></div>
-              <div><h1 className="text-2xl font-bold text-gray-800">內部對帳管理系統</h1><p className="text-gray-400 text-sm mt-2 font-medium tracking-wide">請登入您的 Google 帳號以存取後台</p></div>
+              <div><h1 className="text-2xl font-bold text-gray-800">內部對帳管理中心</h1><p className="text-gray-400 text-sm mt-2 font-medium tracking-wide">請登入您的 Google 帳號以存取後台</p></div>
               <button onClick={handleGoogleLogin} className="w-full flex items-center justify-center gap-3 bg-white border border-gray-200 py-4 rounded-xl font-bold text-gray-600 hover:bg-gray-50 transition-all shadow-sm active:scale-95 border-b-4 border-b-gray-100"><img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5"/> 使用 Google 帳號登入</button>
             </div>
           </div>
@@ -214,7 +228,12 @@
       }
 
       if (!isReady) {
-        return <div className="min-h-screen flex flex-col items-center justify-center bg-[#F9F8F6]"><div className="animate-spin rounded-full h-10 w-10 border-b-4 border-[#8BA39E] mb-4"></div><p className="text-[#8BA39E] font-bold">正在同步雲端資料庫...</p></div>;
+        return (
+          <div className="min-h-screen flex flex-col items-center justify-center bg-[#F9F8F6]">
+            <div className="animate-spin rounded-full h-10 w-10 border-b-4 border-[#8BA39E] mb-4"></div>
+            <p className="text-[#8BA39E] font-bold">同步雲端資料庫中...</p>
+          </div>
+        );
       }
 
       return <AdminDashboard 
@@ -249,7 +268,16 @@
       const handleToggleReconcile = async (rem, checked) => {
         const addRef = doc(db, 'artifacts', appId, 'public', 'data', 'custom', 'additions');
         const penRef = doc(db, 'artifacts', appId, 'public', 'data', 'custom', 'pending_remittances');
-        const cleanRem = { ...rem }; delete cleanRem._isRec;
+        
+        const master = masterUnits[rem.unitKey];
+        const cleanRem = { ...rem }; 
+        delete cleanRem._isRec;
+
+        // 使照款對帳時扣除預收款回傳主系統
+        if (checked && selectedStage === '使照' && master?.prepayAmt > 0) {
+            cleanRem.匯款金額 = Math.max(0, cleanRem.匯款金額 - master.prepayAmt);
+        }
+
         try {
           await updateInvoiceData(rem.id, '已對帳', checked);
           if (checked) {
@@ -261,7 +289,7 @@
             await setDoc(addRef, { remittances: newReconciled }, { merge: true });
             await setDoc(penRef, { remittances: arrayUnion(cleanRem) }, { merge: true });
           }
-        } catch (e) { alert("同步失敗，請檢查資料庫 Rules 設定。"); }
+        } catch (e) { alert("同步失敗，請檢查權限。"); }
       };
 
       const handleDeleteRemittance = async (rem) => {
@@ -277,32 +305,20 @@
       const handleAddUser = async () => {
         const email = newEmailInput.trim().toLowerCase();
         const name = newNameInput.trim();
-        if (!name) { alert("請輸入同仁名稱"); return; }
-        if (!email || !email.includes('@')) { alert("請輸入正確的 Email"); return; }
-        if (cloudAuthorizedUsers.some(u => u.email.toLowerCase() === email) || email === FIXED_ADMIN.toLowerCase()) { 
-            alert("該帳號已在授權名單中"); return; 
-        }
-        
+        if (!name || !email.includes('@')) { alert("請輸入完整名稱與 Email"); return; }
         try {
           const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'authorized_emails');
-          await setDoc(docRef, { 
-              users: arrayUnion({ email, name }),
-              emails: arrayUnion(email)
-          }, { merge: true });
-          setNewNameInput('');
-          setNewEmailInput('');
-        } catch (e) { alert("新增失敗，權限可能不足。"); }
+          await setDoc(docRef, { users: arrayUnion({ email, name }), emails: arrayUnion(email) }, { merge: true });
+          setNewNameInput(''); setNewEmailInput('');
+        } catch (e) { alert("新增失敗"); }
       };
 
       const handleRemoveUser = async (targetUser) => {
-        if (!window.confirm(`確定要移除 ${targetUser.name} (${targetUser.email}) 的授權嗎？`)) return;
+        if (!window.confirm(`確定要移除 ${targetUser.name} 的授權嗎？`)) return;
         try {
           const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'settings', 'authorized_emails');
           const newList = cloudAuthorizedUsers.filter(u => u.email.toLowerCase() !== targetUser.email.toLowerCase());
-          await setDoc(docRef, { 
-              users: newList,
-              emails: newList.map(u => u.email)
-          }, { merge: true });
+          await setDoc(docRef, { users: newList, emails: newList.map(u => u.email) }, { merge: true });
         } catch (e) { alert("移除失敗"); }
       };
 
@@ -310,7 +326,7 @@
       const isSuperAdmin = user.email.toLowerCase() === FIXED_ADMIN.toLowerCase();
 
       return (
-        <div className="py-6 px-4 sm:px-6 lg:px-8 font-sans max-w-7xl mx-auto">
+        <div className="py-6 px-4 sm:px-6 lg:px-8 font-sans max-w-[1400px] mx-auto animate-in fade-in duration-500">
           <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
             <div className="flex items-center gap-4">
               <div className="bg-green-50 p-2 rounded-lg text-green-600 shadow-inner"><ShieldCheck size={24}/></div>
@@ -337,46 +353,21 @@
 
           {isSuperAdmin && showUserPanel && (
             <div className="bg-white p-6 rounded-2xl shadow-md border-2 border-orange-100 mb-6 animate-in slide-in-from-top-4 duration-300">
-              <div className="flex items-center gap-2 mb-4 text-orange-600">
-                <Users size={20} />
-                <h2 className="font-bold">授權名單管理</h2>
-              </div>
+              <div className="flex items-center gap-2 mb-4 text-orange-600"><Users size={20} /><h2 className="font-bold">授權名單管理</h2></div>
               <div className="flex flex-col md:flex-row gap-3 mb-6">
-                <input 
-                  type="text" 
-                  placeholder="同仁名稱" 
-                  value={newNameInput}
-                  onChange={(e) => setNewNameInput(e.target.value)}
-                  className="flex-1 px-4 py-2 border rounded-xl outline-none focus:ring-2 focus:ring-orange-200"
-                />
-                <input 
-                  type="email" 
-                  placeholder="Google 帳號 Email" 
-                  value={newEmailInput}
-                  onChange={(e) => setNewEmailInput(e.target.value)}
-                  className="flex-[1.5] px-4 py-2 border rounded-xl outline-none focus:ring-2 focus:ring-orange-200"
-                />
-                <button onClick={handleAddUser} className="bg-orange-500 text-white px-8 py-2 rounded-xl font-bold hover:bg-orange-600 flex items-center justify-center gap-1">
-                  <Plus size={18}/> 加入授權
-                </button>
+                <input type="text" placeholder="同仁名稱" value={newNameInput} onChange={(e) => setNewNameInput(e.target.value)} className="flex-1 px-4 py-2 border rounded-xl outline-none focus:ring-2 focus:ring-orange-200" />
+                <input type="email" placeholder="Google 帳號 Email" value={newEmailInput} onChange={(e) => setNewEmailInput(e.target.value)} className="flex-[1.5] px-4 py-2 border rounded-xl outline-none focus:ring-2 focus:ring-orange-200" />
+                <button onClick={handleAddUser} className="bg-orange-500 text-white px-8 py-2 rounded-xl font-bold hover:bg-orange-600 flex items-center justify-center gap-1"><Plus size={18}/> 加入授權</button>
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
                 <div className="p-3 bg-gray-50 rounded-xl border flex justify-between items-center opacity-60">
-                  <div className="flex flex-col">
-                    <span className="text-xs font-bold text-gray-400 uppercase">管理員</span>
-                    <span className="text-sm font-medium">{FIXED_ADMIN}</span>
-                  </div>
+                  <div className="flex flex-col"><span className="text-xs font-bold text-gray-400 uppercase">管理員</span><span className="text-sm font-medium">{FIXED_ADMIN}</span></div>
                   <span className="text-[10px] bg-gray-200 px-1.5 py-0.5 rounded font-bold">系統預設</span>
                 </div>
                 {cloudAuthorizedUsers.map(u => (
                   <div key={u.email} className="p-3 bg-orange-50/30 rounded-xl border border-orange-100 flex justify-between items-center group">
-                    <div className="flex flex-col overflow-hidden">
-                      <span className="text-xs font-bold text-orange-400">{u.name}</span>
-                      <span className="text-sm font-medium text-gray-700 truncate">{u.email}</span>
-                    </div>
-                    <button onClick={() => handleRemoveUser(u)} className="text-red-300 hover:text-red-500 transition-colors ml-2">
-                      <X size={18} />
-                    </button>
+                    <div className="flex flex-col overflow-hidden"><span className="text-xs font-bold text-orange-400">{u.name}</span><span className="text-sm font-medium text-gray-700 truncate">{u.email}</span></div>
+                    <button onClick={() => handleRemoveUser(u)} className="text-red-300 hover:text-red-500 transition-colors ml-2"><X size={18} /></button>
                   </div>
                 ))}
               </div>
@@ -391,8 +382,9 @@
                     <th className="p-5">對帳</th>
                     <th className="p-5">戶別 / 買方</th>
                     <th className="p-5">匯款資訊 (民國年)</th>
+                    <th className="p-5">備註</th>
                     <th className="p-5">金額比對 ({stageLabel})</th>
-                    <th className="p-5 text-sky-700">發票日期 (民國年)</th>
+                    <th className="p-5 text-sky-700">發票日期</th>
                     <th className="p-5 text-sky-700">發票號碼</th>
                     <th className="p-5 text-center">管理</th>
                   </tr>
@@ -400,7 +392,10 @@
                 <tbody className="divide-y divide-gray-50 text-sm text-gray-700">
                   {combinedRemittances.map((sub) => {
                     const master = masterUnits[sub.unitKey];
-                    const exp = master?.stages?.[selectedStage] || 0;
+                    const baseExp = master?.stages?.[selectedStage] || 0;
+                    const prepayExp = (selectedStage === '使照') ? (master?.prepayAmt || 0) : 0;
+                    const totalExpected = baseExp + prepayExp;
+                    
                     const invData = invoices[sub.id] || {};
                     const isRec = sub._isRec;
 
@@ -408,15 +403,8 @@
                       <tr key={sub.id} className="hover:bg-gray-50/50 transition-colors">
                         <td className="p-5">
                           <label className="flex items-center gap-2 cursor-pointer">
-                            <input 
-                              type="checkbox" 
-                              checked={isRec} 
-                              onChange={(e) => handleToggleReconcile(sub, e.target.checked)} 
-                              className="w-5 h-5 text-[#8BA39E] rounded-md border-gray-300 focus:ring-0 cursor-pointer" 
-                            />
-                            <span className={`font-bold transition-colors ${isRec ? 'text-green-600' : 'text-gray-400'}`}>
-                                {isRec ? '已對帳' : '待處理'}
-                            </span>
+                            <input type="checkbox" checked={isRec} onChange={(e) => handleToggleReconcile(sub, e.target.checked)} className="w-5 h-5 text-[#8BA39E] rounded-md border-gray-300 focus:ring-0 cursor-pointer" />
+                            <span className={`font-bold transition-colors ${isRec ? 'text-green-600' : 'text-gray-400'}`}>{isRec ? '已對帳' : '待處理'}</span>
                           </label>
                         </td>
                         <td className="p-5">
@@ -425,60 +413,73 @@
                         </td>
                         <td className="p-5">
                           <div className="font-semibold">{toROC(sub.匯款日期)}</div>
-                          <div className="text-[10px] text-gray-400 font-mono mt-1">帳號: {sub.帳號後五碼 || '無資料'}</div>
+                          <div className="text-[10px] text-gray-400 font-mono mt-1">帳號: {sub.帳號後五碼 || '無'}</div>
                           <div className="text-[10px] text-gray-400">戶名: {sub.匯款帳戶戶名 || '-'}</div>
-                          {sub.備註 && (
-                            <div className="mt-2 text-[10px] text-blue-600 bg-blue-50 px-2 py-1 rounded border border-blue-100 flex items-start gap-1 whitespace-normal max-w-[200px]">
-                              <MessageSquare size={10} className="mt-0.5 flex-shrink-0" />
-                              <span><b>備註:</b> {sub.備註}</span>
+                        </td>
+                        <td className="p-5">
+                          {sub.備註 ? (
+                            <div className="text-[11px] text-blue-600 bg-blue-50 px-2 py-1.5 rounded border border-blue-100 whitespace-normal max-w-[150px] leading-relaxed">
+                              {sub.備註}
                             </div>
+                          ) : (
+                            <span className="text-gray-200">-</span>
                           )}
                         </td>
                         <td className="p-5">
                           <div className="flex items-center gap-2 font-bold text-lg">
                             <span className="text-[#4A4A4A]">${sub.匯款金額?.toLocaleString()}</span>
-                            {sub.匯款金額 === exp && exp > 0 ? (
-                              <CheckCircle size={18} className="text-green-500" title="符合預期" />
-                            ) : exp > 0 ? (
-                              <XCircle size={18} className="text-orange-400" title="金額不符" />
+                            {sub.匯款金額 === totalExpected && totalExpected > 0 ? (
+                              <CheckCircle size={18} className="text-green-500" />
+                            ) : totalExpected > 0 ? (
+                              <XCircle size={18} className="text-orange-400" />
                             ) : null}
                           </div>
-                          <div className="text-[10px] text-gray-400 font-medium">應收目標: ${exp.toLocaleString()}</div>
-                        </td>
-                        <td className="p-5">
-                          <input 
-                            type="text" 
-                            placeholder="例：115/03/25"
-                            value={toROC(invData['發票日期'])} 
-                            onChange={(e) => updateInvoiceData(sub.id, '發票日期', e.target.value)} 
-                            className="px-3 py-1.5 border border-gray-100 rounded-lg text-xs outline-none focus:ring-2 focus:ring-sky-100 focus:border-sky-300 bg-white w-32" 
-                          />
-                        </td>
-                        <td className="p-5">
-                          <div className="flex items-center gap-1">
-                            <Edit3 size={14} className="text-gray-300"/>
-                            <input 
-                                type="text" 
-                                placeholder="發票號碼" 
-                                value={invData['發票號碼'] || ''} 
-                                onChange={(e) => updateInvoiceData(sub.id, '發票號碼', e.target.value)} 
-                                className="w-32 px-3 py-1.5 border border-gray-100 rounded-lg text-xs font-mono outline-none uppercase bg-white" 
-                            />
+                          <div className="text-[10px] text-gray-400 font-medium">
+                            應收目標: ${totalExpected.toLocaleString()}
+                            {selectedStage === '使照' && prepayExp > 0 && (
+                                <span className="text-blue-500 ml-1">(含預收 ${prepayExp.toLocaleString()})</span>
+                            )}
                           </div>
                         </td>
+                        {/* 修改：獲授權人員僅能閱讀，最高管理員才能編輯 */}
+                        <td className="p-5">
+                          {isSuperAdmin ? (
+                            <input 
+                              type="text" 
+                              placeholder="民國年" 
+                              value={toROC(invData['發票日期'])} 
+                              onChange={(e) => updateInvoiceData(sub.id, '發票日期', e.target.value)} 
+                              className="px-3 py-1.5 border border-gray-100 rounded-lg text-xs outline-none focus:ring-2 focus:ring-sky-100 focus:border-sky-300 bg-white w-28" 
+                            />
+                          ) : (
+                            <span className="text-gray-600 font-medium">{toROC(invData['發票日期']) || '-'}</span>
+                          )}
+                        </td>
+                        <td className="p-5">
+                          {isSuperAdmin ? (
+                            <div className="flex items-center gap-1">
+                              <Edit3 size={14} className="text-gray-300"/>
+                              <input 
+                                  type="text" 
+                                  placeholder="發票號碼" 
+                                  value={invData['發票號碼'] || ''} 
+                                  onChange={(e) => updateInvoiceData(sub.id, '發票號碼', e.target.value)} 
+                                  className="w-32 px-3 py-1.5 border border-gray-100 rounded-lg text-xs font-mono outline-none uppercase bg-white" 
+                              />
+                            </div>
+                          ) : (
+                            <span className="text-gray-600 font-mono font-medium">{invData['發票號碼'] || '-'}</span>
+                          )}
+                        </td>
                         <td className="p-5 text-center">
-                          <button onClick={() => handleDeleteRemittance(sub)} className="text-red-200 hover:text-red-500 transition-all p-2 hover:bg-red-50 rounded-full">
-                              <Trash2 size={18} />
-                          </button>
+                          <button onClick={() => handleDeleteRemittance(sub)} className="text-red-200 hover:text-red-500 transition-all p-2 hover:bg-red-50 rounded-full"><Trash2 size={18} /></button>
                         </td>
                       </tr>
                     );
                   })}
                 </tbody>
               </table>
-              {combinedRemittances.length === 0 && (
-                <div className="p-32 text-center text-gray-300 font-bold">目前無回報紀錄</div>
-              )}
+              {combinedRemittances.length === 0 && <div className="p-32 text-center text-gray-300 font-bold">目前無回報紀錄</div>}
             </div>
           </div>
         </div>
