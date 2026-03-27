@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>內部對帳管理中心</title>
+  <title>瀞川日禾對帳管理中心</title>
   
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
@@ -171,7 +171,7 @@
       const handleGoogleLogin = async () => { try { await signInWithPopup(auth, provider); } catch (e) { alert("登入失敗: " + e.message); } };
 
       if (isAuthLoading) return <div className="min-h-screen flex flex-col items-center justify-center bg-[#F9F8F6]"><Loader2 className="animate-spin text-[#8BA39E] mb-4" size={40} /><p className="text-gray-500 font-medium">正在建立安全連線...</p></div>;
-      if (!user) return <div className="min-h-screen flex items-center justify-center bg-[#F9F8F6] p-4"><div className="bg-white p-10 rounded-3xl shadow-xl w-full max-w-md text-center space-y-8 border border-gray-100"><div className="flex justify-center"><div className="bg-[#8BA39E] p-5 rounded-2xl text-white shadow-lg"><Lock size={40} /></div></div><div><h1 className="text-2xl font-bold text-gray-800">內部對帳管理中心</h1><p className="text-gray-400 text-sm mt-2 font-medium tracking-wide">請登入您的 Google 帳號以存取後台</p></div><button onClick={handleGoogleLogin} className="w-full flex items-center justify-center gap-3 bg-white border border-gray-200 py-4 rounded-xl font-bold text-gray-600 hover:bg-gray-50 transition-all shadow-sm active:scale-95 border-b-4 border-b-gray-100"><img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5"/> 使用 Google 帳號登入</button></div></div>;
+      if (!user) return <div className="min-h-screen flex items-center justify-center bg-[#F9F8F6] p-4"><div className="bg-white p-10 rounded-3xl shadow-xl w-full max-w-md text-center space-y-8 border border-gray-100"><div className="flex justify-center"><div className="bg-[#8BA39E] p-5 rounded-2xl text-white shadow-lg"><Lock size={40} /></div></div><div><h1 className="text-2xl font-bold text-gray-800">瀞川日禾對帳管理中心</h1><p className="text-gray-400 text-sm mt-2 font-medium tracking-wide">請登入您的 Google 帳號以存取後台</p></div><button onClick={handleGoogleLogin} className="w-full flex items-center justify-center gap-3 bg-white border border-gray-200 py-4 rounded-xl font-bold text-gray-600 hover:bg-gray-50 transition-all shadow-sm active:scale-95 border-b-4 border-b-gray-100"><img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" className="w-5 h-5"/> 使用 Google 帳號登入</button></div></div>;
       if (!isAdmin) return <div className="min-h-screen flex items-center justify-center bg-[#F9F8F6] p-4"><div className="bg-white p-10 rounded-3xl shadow-xl w-full max-w-md text-center space-y-6 border border-red-100"><AlertCircle className="w-16 h-16 text-red-400 mx-auto" /><h2 className="text-xl font-bold text-gray-800">權限不足</h2><p className="text-gray-500 text-sm leading-relaxed">您的帳號 ({user.email}) 不在授權名單中。<br/>請聯繫系統負責人開通權限。</p><button onClick={() => signOut(auth)} className="w-full py-3 bg-gray-100 text-gray-600 rounded-xl font-bold hover:bg-gray-200 transition-colors">登出並切換帳號</button></div></div>;
       if (!isReady) return <div className="min-h-screen flex flex-col items-center justify-center bg-[#F9F8F6]"><div className="animate-spin rounded-full h-10 w-10 border-b-4 border-[#8BA39E] mb-4"></div><p className="text-[#8BA39E] font-bold">正在同步雲端資料庫...</p></div>;
 
@@ -280,7 +280,7 @@
           <div className="bg-white p-5 rounded-2xl shadow-sm border border-gray-100 flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
             <div className="flex items-center gap-4">
               <div className="bg-green-50 p-2 rounded-lg text-green-600 shadow-inner"><ShieldCheck size={24}/></div>
-              <div><h1 className="text-lg font-bold text-gray-800">內部對帳管理中心</h1><p className="text-xs text-gray-400 font-medium">{user.email} ({isSuperAdmin ? '最高管理員' : '獲授權人員'})</p></div>
+              <div><h1 className="text-lg font-bold text-gray-800">瀞川日禾對帳管理中心</h1><p className="text-xs text-gray-400 font-medium">{user.email} ({isSuperAdmin ? '最高管理員' : '獲授權人員'})</p></div>
             </div>
             <div className="flex items-center gap-3">
               {isSuperAdmin && (<button onClick={() => setShowUserPanel(!showUserPanel)} className={`flex items-center gap-1 px-3 py-2 rounded-xl text-sm font-bold transition-all ${showUserPanel ? 'bg-orange-100 text-orange-600' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}><Users size={18} /> {showUserPanel ? '關閉人員管理' : '授權名單管理'}</button>)}
