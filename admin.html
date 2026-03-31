@@ -35,7 +35,7 @@
   <script type="text/babel" data-type="module">
     import React, { useState, useEffect, useMemo } from 'react';
     import { createRoot } from 'react-dom/client';
-    import { CheckCircle, XCircle, Edit3, Lock, LogIn, LogOut, Trash2, AlertCircle, ShieldCheck, Loader2, Database, Users, Plus, X, User, MessageSquare } from 'lucide-react';
+    import { CheckCircle, XCircle, Edit3, Lock, LogIn, LogOut, Trash2, AlertCircle, ShieldCheck, Loader2, Database, Users, Plus, X, User, MessageSquare, Archive, CheckSquare, Square } from 'lucide-react';
     import { initializeApp, getApps } from 'firebase/app';
     import { getAuth, onAuthStateChanged, GoogleAuthProvider, signInWithPopup, signOut } from 'firebase/auth';
     import { getFirestore, doc, setDoc, onSnapshot, collection, updateDoc, arrayUnion, getDoc } from 'firebase/firestore';
@@ -120,7 +120,7 @@
       const [masterUnits, setMasterUnits] = useState({}); 
       const [reconciledRems, setReconciledRems] = useState([]); 
       const [pendingRems, setPendingRems] = useState([]);
-      const [invoices, setInvoices] = useState({});       
+      const [invoices, setInvoices] = useState({});        
 
       useEffect(() => {
         if (!user || !isAdmin) return;
@@ -187,6 +187,7 @@
       const [showUserPanel, setShowUserPanel] = useState(false);
       const [newNameInput, setNewNameInput] = useState('');
       const [newEmailInput, setNewEmailInput] = useState('');
+      const [selectedArchiveIds, setSelectedArchiveIds] = useState([]);
 
       const combinedRemittances = useMemo(() => {
         const p = pendingRems.map(r => ({ ...r, _isRec: false }));
@@ -194,12 +195,33 @@
         return [...p, ...r].sort((a, b) => (parseInt(b.id) || 0) - (parseInt(a.id) || 0));
       }, [pendingRems, reconciledRems]);
 
+      // 【重複檢查邏輯】
+      const unitCounts = useMemo(() => {
+        const counts = {};
+        combinedRemittances.forEach(r => {
+          counts[r.unitKey] = (counts[r.unitKey] || 0) + 1;
+        });
+        return counts;
+      }, [combinedRemittances]);
+
+      // 【全選邏輯】
+      const isAllSelected = useMemo(() => {
+        return combinedRemittances.length > 0 && selectedArchiveIds.length === combinedRemittances.length;
+      }, [combinedRemittances, selectedArchiveIds]);
+
+      const handleToggleAll = () => {
+        if (isAllSelected) {
+          setSelectedArchiveIds([]);
+        } else {
+          setSelectedArchiveIds(combinedRemittances.map(r => r.id));
+        }
+      };
+
       const updateInvoiceData = async (remittanceId, field, value) => {
         const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'invoices', 'all_invoices');
         try { await setDoc(docRef, { [remittanceId]: { [field]: value } }, { merge: true }); } catch (e) {}
       };
 
-      // 【通用修改函式】：用於更新匯款紀錄陣列中的特定欄位（如金額）
       const updateRemittanceField = async (rem, field, value) => {
         const path = rem._isRec ? 'additions' : 'pending_remittances';
         const list = rem._isRec ? reconciledRems : pendingRems;
@@ -247,11 +269,46 @@
       };
 
       const handleDeleteRemittance = async (rem) => {
-        if (!window.confirm("確定要刪除這筆紀錄嗎？")) return;
+        if (!window.confirm("確定要刪除這筆紀錄嗎？這將從資料庫永久移除。")) return;
         const path = rem._isRec ? 'additions' : 'pending_remittances';
         const list = rem._isRec ? reconciledRems : pendingRems;
         const ref = doc(db, 'artifacts', appId, 'public', 'data', 'custom', path);
         await setDoc(ref, { remittances: list.filter(r => r.id !== rem.id) }, { merge: true });
+      };
+
+      // 【封存邏輯】
+      const handleBulkArchive = async () => {
+        if (selectedArchiveIds.length === 0) return;
+        if (!window.confirm(`確定要封存這 ${selectedArchiveIds.length} 筆紀錄嗎？\n資料將從主畫面移至備份區，不會被刪除。`)) return;
+
+        const archiveRef = doc(db, 'artifacts', appId, 'public', 'data', 'custom', 'archived');
+        const penRef = doc(db, 'artifacts', appId, 'public', 'data', 'custom', 'pending_remittances');
+        const addRef = doc(db, 'artifacts', appId, 'public', 'data', 'custom', 'additions');
+
+        const itemsToArchive = combinedRemittances
+          .filter(r => selectedArchiveIds.includes(r.id))
+          .map(r => {
+            const clean = { ...r, _archivedAt: new Date().toISOString() };
+            delete clean._isRec;
+            return clean;
+          });
+
+        try {
+          // 1. 加入封存區
+          const existingArchive = (await getDoc(archiveRef)).data()?.remittances || [];
+          await setDoc(archiveRef, { remittances: [...existingArchive, ...itemsToArchive] }, { merge: true });
+
+          // 2. 從原始清單移除
+          const newPending = pendingRems.filter(r => !selectedArchiveIds.includes(r.id));
+          const newReconciled = reconciledRems.filter(r => !selectedArchiveIds.includes(r.id));
+          
+          await setDoc(penRef, { remittances: newPending }, { merge: true });
+          await setDoc(addRef, { remittances: newReconciled }, { merge: true });
+
+          setSelectedArchiveIds([]);
+        } catch (e) {
+          alert("封存失敗，請檢查網路連線。");
+        }
       };
 
       const handleAddUser = async () => {
@@ -283,7 +340,18 @@
               <div><h1 className="text-lg font-bold text-gray-800">瀞川日禾對帳管理中心</h1><p className="text-xs text-gray-400 font-medium">{user.email} ({isSuperAdmin ? '最高管理員' : '獲授權人員'})</p></div>
             </div>
             <div className="flex items-center gap-3">
-              {isSuperAdmin && (<button onClick={() => setShowUserPanel(!showUserPanel)} className={`flex items-center gap-1 px-3 py-2 rounded-xl text-sm font-bold transition-all ${showUserPanel ? 'bg-orange-100 text-orange-600' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}><Users size={18} /> {showUserPanel ? '關閉人員管理' : '授權名單管理'}</button>)}
+              {isSuperAdmin && (
+                <>
+                  <button 
+                    onClick={handleBulkArchive} 
+                    disabled={selectedArchiveIds.length === 0}
+                    className={`flex items-center gap-1 px-3 py-2 rounded-xl text-sm font-bold transition-all ${selectedArchiveIds.length > 0 ? 'bg-blue-600 text-white shadow-md' : 'bg-gray-100 text-gray-300 cursor-not-allowed'}`}
+                  >
+                    <Archive size={18} /> 批次封存 ({selectedArchiveIds.length})
+                  </button>
+                  <button onClick={() => setShowUserPanel(!showUserPanel)} className={`flex items-center gap-1 px-3 py-2 rounded-xl text-sm font-bold transition-all ${showUserPanel ? 'bg-orange-100 text-orange-600' : 'bg-gray-100 text-gray-500 hover:bg-gray-200'}`}><Users size={18} /> {showUserPanel ? '關閉人員管理' : '授權名單管理'}</button>
+                </>
+              )}
               <div className="bg-gray-50 px-4 py-2 rounded-xl border border-gray-100 flex items-center gap-2">
                 <span className="text-sm font-bold text-gray-500">期款比對：</span>
                 <select value={selectedStage} onChange={(e) => setSelectedStage(e.target.value)} className="bg-transparent text-sm font-bold text-gray-700 outline-none cursor-pointer">{PAYMENT_STAGES.map(s => <option key={s.k} value={s.k}>{s.l}</option>)}</select>
@@ -309,13 +377,27 @@
 
           <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
             <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse whitespace-nowrap">
+              <table className="w-full text-left border-collapse whitespace-nowrap table-fixed">
                 <thead>
-                  <tr className="bg-[#F8F7F3] text-gray-500 text-xs uppercase tracking-wider font-bold">
-                    <th className="p-5">對帳</th><th className="p-5">戶別 / 買方</th><th className="p-5">匯款資訊 (民國年)</th><th className="p-5">備註</th><th className="p-5">金額比對 ({stageLabel})</th><th className="p-5 text-sky-700">發票日期</th><th className="p-5 text-sky-700">發票號碼</th><th className="p-5 text-center">管理</th>
+                  <tr className="bg-[#F8F7F3] text-gray-500 text-xs uppercase tracking-wider font-medium">
+                    {isSuperAdmin && (
+                      <th className="py-3 px-5 w-8 text-center">
+                        <button onClick={handleToggleAll} className="text-gray-400 hover:text-blue-500 transition-colors" title="全選/取消全選">
+                          {isAllSelected ? <CheckSquare size={20} className="text-blue-600" /> : <Square size={20} />}
+                        </button>
+                      </th>
+                    )}
+                    <th className="py-3 px-5 w-20">對帳</th>
+                    <th className="py-3 px-5 w-28">戶別 / 買方</th>
+                    <th className="py-3 px-5 w-56">匯款資訊 (民國年)</th>
+                    <th className="py-3 px-5 w-40 text-left">備註</th>
+                    <th className="py-3 px-5 w-56">金額比對 ({stageLabel})</th>
+                    <th className="py-3 px-5 w-32 text-sky-700">發票日期</th>
+                    <th className="py-3 px-5 w-44 text-sky-700">發票號碼</th>
+                    <th className="py-3 px-5 w-20 text-center">管理</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-50 text-sm text-gray-700">
+                <tbody className="divide-y divide-gray-50 text-[15px] text-gray-700 font-normal">
                   {combinedRemittances.map((sub) => {
                     const master = masterUnits[sub.unitKey];
                     const baseExp = master?.stages?.[selectedStage] || 0;
@@ -323,19 +405,44 @@
                     const totalExpected = baseExp + prepayExp;
                     const invData = invoices[sub.id] || {};
                     const isRec = sub._isRec;
+                    const isDuplicate = unitCounts[sub.unitKey] > 1;
 
                     // 取得目前畫面上要顯示的比對金額（若已扣除預收則加回來顯示）
                     const currentDisplayAmt = (sub._isRec && sub._prepayDeducted) ? (sub.匯款金額 + (master?.prepayAmt || 0)) : sub.匯款金額;
 
                     return (
-                      <tr key={sub.id} className="hover:bg-gray-50/50 transition-colors">
-                        <td className="p-5"><label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" checked={isRec} onChange={(e) => handleToggleReconcile(sub, e.target.checked)} className="w-5 h-5 text-[#8BA39E] rounded-md border-gray-300 focus:ring-0 cursor-pointer" /><span className={`font-bold transition-colors ${isRec ? 'text-green-600' : 'text-gray-400'}`}>{isRec ? '已對帳' : '待處理'}</span></label></td>
-                        <td className="p-5"><div className="font-bold text-gray-800 text-base">{master ? `${master.floor}${master.unit}` : sub.unitKey}</div><div className="text-xs text-[#8BA39E] font-medium">{master ? master.buyer : '未識別'}</div></td>
-                        <td className="p-5"><div className="font-semibold">{toROC(sub.匯款日期)}</div><div className="text-[10px] text-gray-400 font-mono mt-1">帳號: {sub.帳號後五碼 || '無'}</div><div className="text-[10px] text-gray-400">戶名: {sub.匯款帳戶戶名 || '-'}</div></td>
-                        <td className="p-5">{sub.備註 ? (<div className="text-[11px] text-blue-600 bg-blue-50 px-2 py-1.5 rounded border border-blue-100 whitespace-normal max-w-[150px] leading-relaxed">{sub.備註}</div>) : (<span className="text-gray-200">-</span>)}</td>
-                        <td className="p-5">
-                          <div className="flex items-center gap-2 font-bold text-lg">
-                            {/* 修改：管理員可手動修改金額 */}
+                      <tr key={sub.id} className={`transition-colors ${isDuplicate ? 'bg-yellow-50/80 hover:bg-yellow-100/80' : 'hover:bg-gray-50/50'}`}>
+                        {isSuperAdmin && (
+                          <td className="py-3 px-5 text-center">
+                            <button 
+                              onClick={() => {
+                                setSelectedArchiveIds(prev => 
+                                  prev.includes(sub.id) ? prev.filter(id => id !== sub.id) : [...prev, sub.id]
+                                );
+                              }}
+                              className="text-gray-400 hover:text-blue-500 transition-colors"
+                            >
+                              {selectedArchiveIds.includes(sub.id) ? <CheckSquare size={20} className="text-blue-600" /> : <Square size={20} />}
+                            </button>
+                          </td>
+                        )}
+                        <td className="py-3 px-5"><label className="flex items-center gap-2 cursor-pointer"><input type="checkbox" checked={isRec} onChange={(e) => handleToggleReconcile(sub, e.target.checked)} className="w-5 h-5 text-[#8BA39E] rounded-md border-gray-300 focus:ring-0 cursor-pointer" /><span className={`transition-colors ${isRec ? 'text-green-600 font-medium' : 'text-gray-400'}`}>{isRec ? '已對帳' : '待處理'}</span></label></td>
+                        <td className="py-3 px-5">
+                          <div className="text-gray-800 text-base flex items-center gap-2">
+                            {master ? `${master.floor}${master.unit}` : sub.unitKey}
+                            {isDuplicate && <span className="bg-yellow-200 text-yellow-800 text-[10px] px-1.5 py-0.5 rounded-full font-medium">重複</span>}
+                          </div>
+                          <div className="text-xs text-[#8BA39E]">{master ? master.buyer : '未識別'}</div>
+                        </td>
+                        <td className="py-3 px-5">
+                          <div>{toROC(sub.匯款日期)}</div>
+                          <div className="text-[10px] text-gray-400 font-mono mt-1">
+                            帳號: {sub.帳號後五碼 || '無'} &nbsp;|&nbsp; 戶名: {sub.匯款帳戶戶名 || '-'}
+                          </div>
+                        </td>
+                        <td className="py-3 px-5">{sub.備註 ? (<div className="text-[11px] text-blue-600 bg-blue-50 px-2 py-1.5 rounded border border-blue-100 whitespace-pre-wrap max-w-[150px] leading-relaxed">{sub.備註}</div>) : (<span className="text-gray-200">-</span>)}</td>
+                        <td className="py-3 px-5">
+                          <div className="flex items-center gap-2 text-lg">
                             {isSuperAdmin ? (
                                 <div className="flex items-center gap-1 bg-gray-50 px-2 py-1 rounded border border-gray-200 focus-within:border-[#8BA39E] transition-colors">
                                     <span className="text-gray-400 text-sm">$</span>
@@ -350,7 +457,7 @@
                                                 updateRemittanceField(sub, '匯款金額', valToSave);
                                             }
                                         }}
-                                        className="w-24 bg-transparent outline-none text-[#4A4A4A] text-lg font-bold"
+                                        className="w-24 bg-transparent outline-none text-[#4A4A4A] text-lg"
                                     />
                                 </div>
                             ) : (
@@ -363,14 +470,14 @@
                               <XCircle size={18} className="text-orange-400" />
                             ) : null}
                           </div>
-                          <div className="text-[10px] text-gray-400 font-medium mt-1">
+                          <div className="text-[10px] text-gray-400 mt-1">
                             應收目標: ${totalExpected.toLocaleString()}
                             {selectedStage === '使照' && prepayExp > 0 && (<span className="text-blue-500 ml-1">(含預收 ${prepayExp.toLocaleString()})</span>)}
                           </div>
                         </td>
-                        <td className="p-5">{isSuperAdmin ? (<input type="text" placeholder="民國年" value={toROC(invData['發票日期'])} onChange={(e) => updateInvoiceData(sub.id, '發票日期', e.target.value)} className="px-3 py-1.5 border border-gray-100 rounded-lg text-xs outline-none focus:ring-2 focus:ring-sky-100 focus:border-sky-300 bg-white w-28" />) : (<span className="text-gray-600 font-medium">{toROC(invData['發票日期']) || '-'}</span>)}</td>
-                        <td className="p-5">{isSuperAdmin ? (<div className="flex items-center gap-1"><Edit3 size={14} className="text-gray-300"/><input type="text" placeholder="發票號碼" value={invData['發票號碼'] || ''} onChange={(e) => updateInvoiceData(sub.id, '發票號碼', e.target.value)} className="w-32 px-3 py-1.5 border border-gray-100 rounded-lg text-xs font-mono outline-none uppercase bg-white" /></div>) : (<span className="text-gray-600 font-mono font-medium">{invData['發票號碼'] || '-'}</span>)}</td>
-                        <td className="p-5 text-center"><button onClick={() => handleDeleteRemittance(sub)} className="text-red-200 hover:text-red-500 transition-all p-2 hover:bg-red-50 rounded-full"><Trash2 size={18} /></button></td>
+                        <td className="py-3 px-5">{isSuperAdmin ? (<input type="text" placeholder="民國年" value={toROC(invData['發票日期'])} onChange={(e) => updateInvoiceData(sub.id, '發票日期', e.target.value)} className="px-3 py-1.5 border border-gray-100 rounded-lg text-xs outline-none focus:ring-2 focus:ring-sky-100 focus:border-sky-300 bg-white w-28" />) : (<span className="text-gray-600">{toROC(invData['發票日期']) || '-'}</span>)}</td>
+                        <td className="py-3 px-5">{isSuperAdmin ? (<div className="flex items-center gap-1"><Edit3 size={14} className="text-gray-300"/><input type="text" placeholder="發票號碼" value={invData['發票號碼'] || ''} onChange={(e) => updateInvoiceData(sub.id, '發票號碼', e.target.value)} className="w-32 px-3 py-1.5 border border-gray-100 rounded-lg text-xs font-mono outline-none uppercase bg-white" /></div>) : (<span className="text-gray-600 font-mono">{invData['發票號碼'] || '-'}</span>)}</td>
+                        <td className="py-3 px-5 text-center"><button onClick={() => handleDeleteRemittance(sub)} className="text-red-200 hover:text-red-500 transition-all p-2 hover:bg-red-50 rounded-full"><Trash2 size={18} /></button></td>
                       </tr>
                     );
                   })}
