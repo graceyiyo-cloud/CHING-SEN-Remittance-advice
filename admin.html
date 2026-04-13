@@ -120,7 +120,7 @@
       const [masterUnits, setMasterUnits] = useState({}); 
       const [reconciledRems, setReconciledRems] = useState([]); 
       const [pendingRems, setPendingRems] = useState([]);
-      const [invoices, setInvoices] = useState({});        
+      const [invoices, setInvoices] = useState({});         
 
       useEffect(() => {
         if (!user || !isAdmin) return;
@@ -442,7 +442,7 @@
                         </td>
                         <td className="py-3 px-5">{sub.備註 ? (<div className="text-[11px] text-blue-600 bg-blue-50 px-2 py-1.5 rounded border border-blue-100 whitespace-pre-wrap max-w-[150px] leading-relaxed">{sub.備註}</div>) : (<span className="text-gray-200">-</span>)}</td>
                         <td className="py-3 px-5">
-                          <div className="flex items-center gap-2 text-lg">
+                          <div className="flex items-center gap-2">
                             {isSuperAdmin ? (
                                 <div className="flex items-center gap-1 bg-gray-50 px-2 py-1 rounded border border-gray-200 focus-within:border-[#8BA39E] transition-colors">
                                     <span className="text-gray-400 text-sm">$</span>
@@ -457,11 +457,11 @@
                                                 updateRemittanceField(sub, '匯款金額', valToSave);
                                             }
                                         }}
-                                        className="w-24 bg-transparent outline-none text-[#4A4A4A] text-lg"
+                                        className="w-24 bg-transparent outline-none text-[#4A4A4A] text-base"
                                     />
                                 </div>
                             ) : (
-                                <span className="text-[#4A4A4A]">${currentDisplayAmt?.toLocaleString()}</span>
+                                <span className="text-[#4A4A4A] text-base">${currentDisplayAmt?.toLocaleString()}</span>
                             )}
                             
                             {currentDisplayAmt === totalExpected && totalExpected > 0 ? (
@@ -470,9 +470,13 @@
                               <XCircle size={18} className="text-orange-400" />
                             ) : null}
                           </div>
-                          <div className="text-[10px] text-gray-400 mt-1">
-                            應收目標: ${totalExpected.toLocaleString()}
-                            {selectedStage === '使照' && prepayExp > 0 && (<span className="text-blue-500 ml-1">(含預收 ${prepayExp.toLocaleString()})</span>)}
+                          <div className="text-[10px] text-gray-400 mt-1 leading-tight">
+                            應收總額: ${totalExpected.toLocaleString()}
+                            {totalExpected > 0 && (
+                              <div className="text-[9px]">
+                                ({stageLabel}${baseExp.toLocaleString()}+預收 ${prepayExp.toLocaleString()})
+                              </div>
+                            )}
                           </div>
                         </td>
                         <td className="py-3 px-5">{isSuperAdmin ? (<input type="text" placeholder="民國年" value={toROC(invData['發票日期'])} onChange={(e) => updateInvoiceData(sub.id, '發票日期', e.target.value)} className="px-3 py-1.5 border border-gray-100 rounded-lg text-xs outline-none focus:ring-2 focus:ring-sky-100 focus:border-sky-300 bg-white w-28" />) : (<span className="text-gray-600">{toROC(invData['發票日期']) || '-'}</span>)}</td>
