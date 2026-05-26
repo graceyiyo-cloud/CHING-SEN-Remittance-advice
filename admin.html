@@ -610,7 +610,23 @@
                             帳號: {sub.帳號後五碼 || '無'} &nbsp;|&nbsp; 戶名: {sub.匯款帳戶戶名 || '-'}
                           </div>
                         </td>
-                        <td className="py-3 px-5">{sub.備註 ? (<div className="text-[11px] text-blue-600 bg-blue-50 px-2 py-1.5 rounded border border-blue-100 whitespace-pre-wrap max-w-[150px] leading-relaxed">{sub.備註}</div>) : (<span className="text-gray-200">-</span>)}</td>
+                        <td className="py-3 px-5">
+                          {isSuperAdmin && viewMode === 'active' ? (
+                            <textarea
+                              defaultValue={sub.備註 || ''}
+                              onBlur={(e) => {
+                                const newVal = e.target.value.trim();
+                                if (newVal !== (sub.備註 || '')) {
+                                  updateRemittanceField(sub, '備註', newVal);
+                                }
+                              }}
+                              placeholder="新增備註..."
+                              className="w-full max-w-[150px] min-h-[38px] px-2 py-1.5 text-[11px] text-blue-600 bg-white border border-gray-200 rounded outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-100 whitespace-pre-wrap leading-relaxed resize-y"
+                            />
+                          ) : (
+                            sub.備註 ? (<div className="text-[11px] text-blue-600 bg-blue-50 px-2 py-1.5 rounded border border-blue-100 whitespace-pre-wrap max-w-[150px] leading-relaxed">{sub.備註}</div>) : (<span className="text-gray-200">-</span>)
+                          )}
+                        </td>
                         <td className="py-3 px-5">
                           <div className="flex items-center gap-2">
                             {isSuperAdmin && viewMode === 'active' ? (
