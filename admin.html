@@ -204,10 +204,12 @@
       const unitCounts = useMemo(() => {
         const counts = {};
         combinedRemittances.forEach(r => {
-          counts[r.unitKey] = (counts[r.unitKey] || 0) + 1;
+          const currentStage = viewMode === 'archived' ? (r._archivedStage || '使照') : selectedStage;
+          const duplicateKey = `${r.unitKey}_${currentStage}`;
+          counts[duplicateKey] = (counts[duplicateKey] || 0) + 1;
         });
         return counts;
-      }, [combinedRemittances]);
+      }, [combinedRemittances, viewMode, selectedStage]);
 
       // 【全選邏輯】
       const isAllSelected = useMemo(() => {
@@ -557,7 +559,10 @@
                     
                     const invData = invoices[sub.id] || {};
                     const isRec = viewMode === 'archived' ? (sub._wasRec !== undefined ? sub._wasRec : true) : sub._isRec;
-                    const isDuplicate = unitCounts[sub.unitKey] > 1;
+                    
+                    // 重複比對條件加入 currentStage 組合
+                    const duplicateKey = `${sub.unitKey}_${currentStage}`;
+                    const isDuplicate = unitCounts[duplicateKey] > 1;
 
                     // 金額直接對應資料庫原始值，不再隱式增減
                     const currentDisplayAmt = sub.匯款金額;
