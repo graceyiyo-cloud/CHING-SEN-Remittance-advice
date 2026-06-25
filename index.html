@@ -62,6 +62,7 @@
       const [isReady, setIsReady] = useState(false);
       const [dbError, setDbError] = useState('');
       const [masterUnits, setMasterUnits] = useState({}); 
+      const [customUnits, setCustomUnits] = useState({}); // 新增：用於存放雲端手動新增戶
 
       const [formData, setFormData] = useState({ unitKey: '', remitDate: '', accountLast5: '', remitterName: '', amount: '', notes: '' });
       const [submitSuccess, setSubmitSuccess] = useState(false);
@@ -90,10 +91,11 @@
             snap.forEach(docSnap => {
               const rows = docSnap.data().rows || [];
               rows.forEach(row => {
-                let f = String(row['樓層'] || '').trim().replace(/\.0$/, '');
-                let u = String(row['編號'] || '').trim().replace(/\.0$/, '');
+                // 修改：統一轉為大寫，與青森苑系統對齊
+                let f = String(row['樓層'] || '').trim().toUpperCase().replace(/\.0$/, '');
+                let u = String(row['編號'] || '').trim().toUpperCase().replace(/\.0$/, '');
                 
-                const combined = String(row['戶別'] || row['戶名'] || '').trim();
+                const combined = String(row['戶別'] || row['戶名'] || '').trim().toUpperCase();
                 if (combined && (!f || !u)) {
                   const match = combined.match(/^(\d+)([A-Z]\d*)$/i);
                   if (match) { f = match[1]; u = match[2]; } else { u = combined; }
@@ -116,10 +118,33 @@
             setIsReady(true);
           }
         );
-        return () => unsubMaster();
+
+        // 新增：訂閱客製化新增戶資料
+        const unsubCustom = onSnapshot(
+          doc(db, 'artifacts', appId, 'public', 'data', 'custom', 'additions'),
+          (snap) => {
+            if (snap.exists() && snap.data().units) {
+              const cUnits = {};
+              Object.entries(snap.data().units).forEach(([k, v]) => {
+                if (v.基本資料) {
+                  cUnits[k] = { 
+                    floor: String(v.基本資料.樓層).toUpperCase(), 
+                    unit: String(v.基本資料.編號).toUpperCase() 
+                  };
+                }
+              });
+              setCustomUnits(cUnits);
+            }
+          }
+        );
+
+        return () => { unsubMaster(); unsubCustom(); };
       }, [user, authReady]);
 
-      const sortedKeys = Object.keys(masterUnits).sort((a, b) => {
+      // 合併 Excel 原始戶別與雲端新增戶別
+      const combinedUnits = { ...masterUnits, ...customUnits };
+
+      const sortedKeys = Object.keys(combinedUnits).sort((a, b) => {
         const parseF = (k) => parseInt(k.split('_')[0]) || 0;
         return parseF(a) - parseF(b) || a.localeCompare(b);
       });
@@ -212,7 +237,7 @@
                 >
                   <option value="" disabled>點擊選擇您的戶別 (如: 2A1)</option>
                   {sortedKeys.map(key => (
-                    <option key={key} value={key}>{masterUnits[key].floor}{masterUnits[key].unit}</option>
+                    <option key={key} value={key}>{combinedUnits[key].floor}{combinedUnits[key].unit}</option>
                   ))}
                 </select>
               </div>
